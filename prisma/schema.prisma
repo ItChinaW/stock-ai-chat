@@ -1,0 +1,96 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// 预留多用户：现阶段只有一条记录 (id=1, name="default")
+// 接入 Auth 后将 userId 来源替换为 session.user.id 即可
+model User {
+  id         Int          @id @default(autoincrement())
+  name       String       @default("default")
+  createdAt  DateTime     @default(now()) @map("created_at")
+  positions  Position[]
+  watchlist  Watchlist[]
+  tradeLogs  TradeLog[]
+  sessions   ChatSession[]
+
+  @@map("users")
+}
+
+model Position {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @default(1) @map("user_id")
+  code      String
+  name      String   @default("")
+  costPrice Float    @map("cost_price")
+  amount    Float
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@map("positions")
+}
+
+model Watchlist {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @default(1) @map("user_id")
+  code      String
+  name      String   @default("")
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@unique([userId, code])
+  @@map("watchlist")
+}
+
+model Strategy {
+  id          Int        @id @default(autoincrement())
+  name        String
+  description String
+  tradeLogs   TradeLog[]
+
+  @@map("strategies")
+}
+
+model TradeLog {
+  id             Int       @id @default(autoincrement())
+  userId         Int       @default(1) @map("user_id")
+  code           String
+  date           DateTime  @default(now())
+  aiSuggestion   String    @map("ai_suggestion")
+  userAction     String    @map("user_action") // "executed" | "ignored"
+  pnlAfterAction Float?    @map("pnl_after_action")
+  strategyId     Int?      @map("strategy_id")
+  strategy       Strategy? @relation(fields: [strategyId], references: [id])
+  createdAt      DateTime  @default(now()) @map("created_at")
+  user           User      @relation(fields: [userId], references: [id])
+
+  @@map("trade_logs")
+}
+
+model ChatSession {
+  id        Int           @id @default(autoincrement())
+  userId    Int           @default(1) @map("user_id")
+  code      String
+  updatedAt DateTime      @updatedAt @map("updated_at")
+  messages  ChatMessage[]
+  user      User          @relation(fields: [userId], references: [id])
+
+  @@unique([userId, code])
+  @@map("chat_sessions")
+}
+
+model ChatMessage {
+  id        Int         @id @default(autoincrement())
+  sessionId Int         @map("session_id")
+  role      String      // "user" | "assistant"
+  content   String
+  createdAt DateTime    @default(now()) @map("created_at")
+  session   ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@map("chat_messages")
+}
