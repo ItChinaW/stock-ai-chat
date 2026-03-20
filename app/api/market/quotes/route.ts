@@ -5,7 +5,7 @@ export async function GET(request: NextRequest) {
   const symbolsParam = request.nextUrl.searchParams.get("symbols") ?? "";
   const symbols = symbolsParam
     .split(",")
-    .map((item) => item.trim().toUpperCase())
+    .map((item) => item.trim())
     .filter(Boolean);
 
   if (symbols.length === 0) {
@@ -25,7 +25,6 @@ export async function GET(request: NextRequest) {
           changePercent: item.changePercent,
           previousClose: item.previousClose,
           currency: item.currency,
-          marketState: item.marketState,
         },
       ]),
     );

@@ -15,24 +15,30 @@ function isAStock(symbol: string): boolean {
   return /^\d{6}$/.test(symbol);
 }
 
-// 判断是否为 A 股指数（sh000001 等）
+// 判断是否为新浪格式的 A 股指数（sh000001 等）
 function isAIndex(symbol: string): boolean {
   return /^(sh|sz)\d+$/.test(symbol);
 }
 
-// A 股代码转新浪前缀
+// 判断是否为新浪格式的纳斯达克指数（.IXIC 等）
+function isNasdaqIndex(symbol: string): boolean {
+  return symbol.startsWith(".");
+}
+
+// 代码转新浪格式
 function toSinaCode(symbol: string): string {
-  if (isAIndex(symbol)) return symbol; // 已经带前缀
+  if (isAIndex(symbol)) return symbol; // 已经是 sh/sz 格式
+  if (isNasdaqIndex(symbol)) return `gb_${symbol.slice(1).toLowerCase()}`; // .IXIC -> gb_ixic
   if (isAStock(symbol)) {
     const isSH = symbol.startsWith("6") || symbol.startsWith("5") || symbol.startsWith("11");
     return `${isSH ? "sh" : "sz"}${symbol}`;
   }
-  // 美股：gb_ 前缀
+  // 美股代码
   return `gb_${symbol.toLowerCase()}`;
 }
 
 // 解析新浪 A 股/指数行情字符串
-// 格式：名称,今开,昨收,现价,最高,最低,买一,卖一,成交量,成交额,...,日期,时间
+// 格式：名称,今开,昨收,现价,最高,最低,...
 function parseAStockLine(symbol: string, fields: string[]): QuoteItem | null {
   const name = fields[0] ?? "";
   const price = Number(fields[3]);
@@ -43,8 +49,8 @@ function parseAStockLine(symbol: string, fields: string[]): QuoteItem | null {
   return { symbol, name, price, change, changePercent, previousClose, currency: "CNY" };
 }
 
-// 解析新浪美股行情字符串
-// 格式：名称,现价,涨跌幅%,时间,涨跌额,今开,最高,最低,...
+// 解析新浪美股/指数行情字符串
+// 格式：名称,现价,涨跌幅%,时间,涨跌额,...
 function parseUSStockLine(symbol: string, fields: string[]): QuoteItem | null {
   const name = fields[0] ?? "";
   const price = Number(fields[1]);
@@ -79,7 +85,9 @@ async function fetchSinaQuotes(symbols: string[]): Promise<QuoteItem[]> {
     for (let i = 0; i < symbols.length; i++) {
       const symbol = symbols[i]!;
       const sinaCode = sinaCodes[i]!;
-      const regex = new RegExp(`hq_str_${sinaCode.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}="([^"]*)"`);
+      // 转义正则特殊字符
+      const escaped = sinaCode.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
+      const regex = new RegExp(`hq_str_${escaped}="([^"]*)"`);
       const m = text.match(regex);
       if (!m || !m[1]) continue;
 

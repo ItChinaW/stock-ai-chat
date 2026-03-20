@@ -17,6 +17,7 @@ model User {
   watchlist  Watchlist[]
   tradeLogs  TradeLog[]
   sessions   ChatSession[]
+  strategies Strategy[]
 
   @@map("users")
 }
@@ -49,9 +50,11 @@ model Watchlist {
 
 model Strategy {
   id          Int        @id @default(autoincrement())
+  userId      Int        @default(1) @map("user_id")
   name        String
   description String
   tradeLogs   TradeLog[]
+  user        User       @relation(fields: [userId], references: [id])
 
   @@map("strategies")
 }

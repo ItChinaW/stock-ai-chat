@@ -113,10 +113,8 @@ export default function Watchlist({
               className="flex items-center justify-between rounded-xl border border-zinc-100 bg-white p-3 text-left shadow-sm transition hover:border-zinc-300 hover:shadow-md cursor-pointer"
             >
               <div>
-                <p className="font-semibold text-zinc-800">{item.code}</p>
-                {(quotes[item.code]?.name || item.name) && (
-                  <p className="text-xs text-zinc-400">{quotes[item.code]?.name || item.name}</p>
-                )}
+                <p className="font-semibold text-zinc-800">{quotes[item.code]?.name || item.name || item.code}</p>
+                <p className="text-xs text-zinc-400">{item.code}</p>
               </div>
               <div className="flex items-center gap-3">
                 <div className="text-right">
