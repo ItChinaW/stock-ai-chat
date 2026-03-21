@@ -7,6 +7,7 @@ const MODEL_MAP: Record<string, string> = {
   "gpt-4o-mini": "gpt-4o-mini",
   "deepseek-chat": "deepseek-chat",
   "qwen-plus": "qwen-plus",
+  "glm-4-flash": "glm-4-flash",
 };
 
 export const maxDuration = 60;
@@ -22,6 +23,7 @@ export async function POST(request: NextRequest) {
       amount?: number;
       strategy?: string;
       strategyDescription?: string;
+      backtestContext?: string;
     };
   };
 
@@ -29,33 +31,48 @@ export async function POST(request: NextRequest) {
   const modelId = MODEL_MAP[modelKey] ?? "deepseek-chat";
   const isDeepSeek = modelKey.startsWith("deepseek");
   const isQwen = modelKey.startsWith("qwen");
+  const isZhipu = modelKey.startsWith("glm");
 
   const client = new OpenAI({
     apiKey: isDeepSeek
       ? (process.env.DEEPSEEK_API_KEY ?? "")
       : isQwen
         ? (process.env.DASHSCOPE_API_KEY ?? "")
-        : (process.env.OPENAI_API_KEY ?? ""),
+        : isZhipu
+          ? (process.env.ZHIPU_API_KEY ?? "")
+          : (process.env.OPENAI_API_KEY ?? ""),
     baseURL: isDeepSeek
       ? "https://api.deepseek.com"
       : isQwen
         ? "https://dashscope.aliyuncs.com/compatible-mode/v1"
-        : undefined,
+        : isZhipu
+          ? "https://open.bigmodel.cn/api/paas/v4"
+          : undefined,
   });
 
   let systemPrompt = INVESTMENT_SYSTEM_PROMPT;
   if (body.context) {
     const ctx = body.context;
-    const pnl =
-      ctx.currentPrice && ctx.costPrice && ctx.amount
-        ? ((ctx.currentPrice - ctx.costPrice) * ctx.amount).toFixed(2)
-        : "未知";
-    systemPrompt += `\n\n当前分析标的：${ctx.code}
-当前价格：${ctx.currentPrice ?? "未知"}
-持仓成本：${ctx.costPrice ?? "未持仓"}
-持仓数量：${ctx.amount ?? 0}
-浮动盈亏：${pnl}
-选用策略：${ctx.strategy ?? "未选择"}${ctx.strategyDescription ? `\n策略内容：${ctx.strategyDescription}` : ""}`;
+
+    // 用户投资背景优先放在最前面，让 AI 重点结合
+    if (ctx.backtestContext) {
+      // backtestContext 可能包含回测数据，也可能只是用户背景
+      systemPrompt += `\n\n---\n${ctx.backtestContext}`;
+    } else {
+      // 普通持仓分析模式
+      const pnl =
+        ctx.currentPrice && ctx.costPrice && ctx.amount
+          ? ((ctx.currentPrice - ctx.costPrice) * ctx.amount).toFixed(2)
+          : "未知";
+      const parts = [
+        `当前分析标的：${ctx.code}`,
+        `当前价格：${ctx.currentPrice ?? "未知"}`,
+        ctx.costPrice ? `持仓成本：${ctx.costPrice}，数量：${ctx.amount ?? 0}，浮动盈亏：¥${pnl}` : null,
+        ctx.strategy ? `选用策略：${ctx.strategy}` : null,
+        ctx.strategyDescription ? `策略内容：${ctx.strategyDescription}` : null,
+      ].filter(Boolean);
+      systemPrompt += `\n\n---\n${parts.join("\n")}`;
+    }
   }
 
   const stream = new ReadableStream({

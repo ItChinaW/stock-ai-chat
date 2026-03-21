@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CircleDollarSign, Eye, Pencil, Plus, Save, Trash2, Upload, Wallet, X } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
+import KlineTooltip from "./kline-tooltip";
 
 type Position = {
   id: number;
@@ -241,11 +242,12 @@ export default function PortfolioDashboard({
           <table className="w-full min-w-[780px] text-sm">
             <thead>
               <tr className="border-b border-zinc-200 text-left text-zinc-500">
-                <th className="pb-2 w-28">代码</th>
+                <th className="pb-2 w-32">代码</th>
                 <th className="pb-2 w-28">成本价</th>
                 <th className="pb-2 w-24">数量</th>
                 <th className="pb-2 w-20">现价</th>
-                <th className="pb-2 w-24">浮动盈亏</th>
+                <th className="pb-2 w-36">浮动盈亏</th>
+                <th className="pb-2 w-28">总盈亏</th>
                 <th className="pb-2 text-right">操作</th>
               </tr>
             </thead>
@@ -253,7 +255,11 @@ export default function PortfolioDashboard({
               {rows.map((row, index) => {
                 const symbol = row.code.trim().toUpperCase();
                 const price = quotesQuery.data?.[symbol]?.price ?? row.costPrice;
-                const rowPnl = (price - row.costPrice) * row.amount;
+                const previousClose = quotesQuery.data?.[symbol]?.previousClose ?? price;
+                const dayPnl = (price - previousClose) * row.amount;
+                const dayPct = previousClose !== 0 ? ((price - previousClose) / previousClose) * 100 : 0;
+                const totalPnl = (price - row.costPrice) * row.amount;
+                const totalPct = row.costPrice !== 0 ? ((price - row.costPrice) / row.costPrice) * 100 : 0;
                 return (
                   <tr key={row.localKey} className="border-b border-zinc-100">
                     <td className="py-2 pr-2">
@@ -265,8 +271,10 @@ export default function PortfolioDashboard({
                         <button type="button"
                           onClick={() => onSelectStock?.(symbol, quotesQuery.data?.[symbol])}
                           className="text-left underline-offset-2 hover:underline">
-                          {row.name && <span className="block font-medium text-zinc-800">{row.name}</span>}
-                          <span className="block text-xs text-zinc-400">{symbol || "-"}</span>
+                          <KlineTooltip symbol={symbol}>
+                            {row.name && <span className="block font-medium text-zinc-800 truncate max-w-[120px]">{row.name}</span>}
+                            <span className="block text-xs text-zinc-400">{symbol || "-"}</span>
+                          </KlineTooltip>
                         </button>
                       )}
                     </td>
@@ -289,8 +297,13 @@ export default function PortfolioDashboard({
                       )}
                     </td>
                     <td className="py-2 pr-2 font-medium text-zinc-700">{price.toFixed(2)}</td>
-                    <td className={`py-2 pr-2 font-medium ${rowPnl >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
-                      {rowPnl >= 0 ? "+" : ""}{rowPnl.toFixed(2)}
+                    <td className={`py-2 pr-2 font-medium ${dayPnl >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                      <span>{dayPnl >= 0 ? "+" : ""}{dayPnl.toFixed(2)}</span>
+                      <span className="ml-1 text-xs opacity-75">({dayPct >= 0 ? "+" : ""}{dayPct.toFixed(2)}%)</span>
+                    </td>
+                    <td className={`py-2 pr-2 font-medium ${totalPnl >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                      <span>{totalPnl >= 0 ? "+" : ""}{totalPnl.toFixed(2)}</span>
+                      <span className="ml-1 text-xs opacity-75">({totalPct >= 0 ? "+" : ""}{totalPct.toFixed(2)}%)</span>
                     </td>
                     <td className="py-2">
                       <div className="flex justify-end gap-2 whitespace-nowrap">
@@ -337,7 +350,11 @@ export default function PortfolioDashboard({
           {rows.map((row, index) => {
             const symbol = row.code.trim().toUpperCase();
             const price = quotesQuery.data?.[symbol]?.price ?? row.costPrice;
-            const rowPnl = (price - row.costPrice) * row.amount;
+            const previousClose = quotesQuery.data?.[symbol]?.previousClose ?? price;
+            const dayPnl = (price - previousClose) * row.amount;
+            const dayPct = previousClose !== 0 ? ((price - previousClose) / previousClose) * 100 : 0;
+            const totalPnl = (price - row.costPrice) * row.amount;
+            const totalPct = row.costPrice !== 0 ? ((price - row.costPrice) / row.costPrice) * 100 : 0;
             return (
               <div key={row.localKey} className="rounded-xl border border-zinc-100 bg-zinc-50 p-3">
                 {row.isEditing ? (
@@ -376,17 +393,27 @@ export default function PortfolioDashboard({
                       <button type="button"
                         onClick={() => onSelectStock?.(symbol, quotesQuery.data?.[symbol])}
                         className="text-left underline-offset-2 hover:underline">
-                        {row.name && <span className="block text-base font-semibold text-zinc-800">{row.name}</span>}
-                        <span className="block text-xs text-zinc-400">{symbol || "-"}</span>
+                        <KlineTooltip symbol={symbol}>
+                          {row.name && <span className="block text-base font-semibold text-zinc-800">{row.name}</span>}
+                          <span className="block text-xs text-zinc-400">{symbol || "-"}</span>
+                        </KlineTooltip>
                       </button>
-                      <span className={`text-base font-semibold ${rowPnl >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
-                        {rowPnl >= 0 ? "+" : ""}{rowPnl.toFixed(2)}
+                      <span className={`text-base font-semibold ${dayPnl >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                        {dayPnl >= 0 ? "+" : ""}{dayPnl.toFixed(2)}
+                        <span className="ml-1 text-xs opacity-75">({dayPct >= 0 ? "+" : ""}{dayPct.toFixed(2)}%)</span>
                       </span>
                     </div>
-                    <div className="mb-3 grid grid-cols-3 gap-1 text-xs text-zinc-500">
+                    <div className="mb-3 grid grid-cols-4 gap-1 text-xs text-zinc-500">
                       <div><span className="block">成本价</span><span className="text-sm font-medium text-zinc-700">{row.costPrice}</span></div>
                       <div><span className="block">数量</span><span className="text-sm font-medium text-zinc-700">{row.amount}</span></div>
                       <div><span className="block">现价</span><span className="text-sm font-medium text-zinc-700">{price.toFixed(2)}</span></div>
+                      <div>
+                        <span className="block">总盈亏</span>
+                        <span className={`text-sm font-medium ${totalPnl >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                          {totalPnl >= 0 ? "+" : ""}{totalPnl.toFixed(2)}
+                          <span className="block text-xs opacity-75">({totalPct >= 0 ? "+" : ""}{totalPct.toFixed(2)}%)</span>
+                        </span>
+                      </div>
                     </div>
                     <div className="flex gap-2">
                       {row.id && (

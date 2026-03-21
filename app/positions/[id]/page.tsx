@@ -1,5 +1,6 @@
 import { fetchYahooQuotes } from "@/lib/market";
 import { prisma } from "@/lib/prisma";
+import KlineChart from "@/components/kline-chart";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
@@ -29,11 +30,19 @@ export default async function PositionDetailPage({ params }: { params: Params })
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-col gap-5 px-4 py-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold text-zinc-900">{position.code} 持仓详情</h1>
+        <div>
+          {position.name && <h1 className="text-2xl font-semibold text-zinc-900">{position.name}</h1>}
+          <p className="text-sm text-zinc-500">{position.code}</p>
+        </div>
         <Link href="/" className="rounded-lg border border-zinc-200 px-3 py-1.5 text-sm text-zinc-700 hover:bg-zinc-100">
           返回首页
         </Link>
       </div>
+
+      <section className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
+        <p className="mb-3 text-sm font-medium text-zinc-600">日K线（近60日）</p>
+        <KlineChart symbol={position.code} />
+      </section>
 
       <section className="grid gap-4 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm md:grid-cols-2">
         <div>

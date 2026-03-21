@@ -18,6 +18,8 @@ model User {
   tradeLogs  TradeLog[]
   sessions   ChatSession[]
   strategies Strategy[]
+  backtests  Backtest[]
+  paperTrades PaperTrade[]
 
   @@map("users")
 }
@@ -75,6 +77,41 @@ model TradeLog {
   @@map("trade_logs")
 }
 
+model Backtest {
+  id           Int      @id @default(autoincrement())
+  userId       Int      @default(1) @map("user_id")
+  name         String
+  symbol       String
+  strategyCode String   @map("strategy_code") // 策略标识
+  params       String   @default("{}") // JSON 字符串，策略参数
+  startDate    String   @map("start_date") // YYYY-MM-DD
+  endDate      String   @map("end_date")
+  initCapital  Float    @default(100000) @map("init_capital")
+  mode         String   @default("compound") // "simple" | "compound"
+  // 结果
+  totalReturn  Float?   @map("total_return")
+  totalPnl     Float?   @map("total_pnl")
+  annualReturn Float?   @map("annual_return")
+  maxDrawdown  Float?   @map("max_drawdown")
+  tradeCount   Int?     @map("trade_count")
+  winRate      Float?   @map("win_rate")
+  sharpe       Float?
+  sortino      Float?
+  calmar       Float?
+  avgHoldDays  Float?   @map("avg_hold_days")
+  avgWin       Float?   @map("avg_win")
+  avgLoss      Float?   @map("avg_loss")
+  profitFactor Float?   @map("profit_factor")
+  equityCurve  String?  @map("equity_curve") // JSON 数组
+  trades       String?  @default("[]") // JSON 数组，交易记录
+  status       String   @default("pending") // "pending"|"running"|"done"|"error"
+  errorMsg     String?  @map("error_msg")
+  createdAt    DateTime @default(now()) @map("created_at")
+  user         User     @relation(fields: [userId], references: [id])
+
+  @@map("backtests")
+}
+
 model ChatSession {
   id        Int           @id @default(autoincrement())
   userId    Int           @default(1) @map("user_id")
@@ -96,4 +133,29 @@ model ChatMessage {
   session   ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   @@map("chat_messages")
+}
+
+model PaperTrade {
+  id           Int      @id @default(autoincrement())
+  userId       Int      @default(1) @map("user_id")
+  symbol       String
+  name         String   @default("")
+  strategyCode String   @map("strategy_code")
+  initCapital  Float    @map("init_capital")   // 买入金额
+  startDate    String   @map("start_date")     // 开始日期 YYYY-MM-DD
+  // 实时状态（每次刷新更新）
+  currentValue Float?   @map("current_value")  // 当前市值
+  totalPnl     Float?   @map("total_pnl")
+  totalReturn  Float?   @map("total_return")
+  inPosition   Boolean  @default(false) @map("in_position")
+  entryPrice   Float?   @map("entry_price")
+  entryDate    String?  @map("entry_date")
+  tradeCount   Int      @default(0) @map("trade_count")
+  trades       String   @default("[]")         // JSON 交易记录
+  status       String   @default("active")     // active | stopped
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+  user         User     @relation(fields: [userId], references: [id])
+
+  @@map("paper_trades")
 }
