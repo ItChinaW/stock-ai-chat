@@ -20,6 +20,7 @@ model User {
   strategies Strategy[]
   backtests  Backtest[]
   paperTrades PaperTrade[]
+  cryptoBots  CryptoBot[]
 
   @@map("users")
 }
@@ -158,4 +159,67 @@ model PaperTrade {
   user         User     @relation(fields: [userId], references: [id])
 
   @@map("paper_trades")
+}
+
+// 加密货币量化机器人
+model CryptoBot {
+  id           Int           @id @default(autoincrement())
+  userId       Int           @default(1) @map("user_id")
+  symbol       String        // 如 BTCUSDT
+  strategyCode String        @map("strategy_code")
+  params       String        @default("{}") // JSON 策略参数
+  interval     String        @default("1d") // K线周期
+  quoteQty     Float         @map("quote_qty") // 每次买入 USDT 金额
+  status       String        @default("stopped") // running | stopped
+  inPosition   Boolean       @default(false) @map("in_position")
+  entryPrice   Float?        @map("entry_price")
+  entryDate    String?       @map("entry_date")
+  lastChecked  DateTime?     @map("last_checked")
+  createdAt    DateTime      @default(now()) @map("created_at")
+  updatedAt    DateTime      @updatedAt @map("updated_at")
+  trades       CryptoTrade[]
+  user         User          @relation(fields: [userId], references: [id])
+
+  @@map("crypto_bots")
+}
+
+model CryptoTrade {
+  id         Int       @id @default(autoincrement())
+  botId      Int       @map("bot_id")
+  symbol     String
+  side       String    // BUY | SELL
+  price      Float
+  qty        Float
+  quoteQty   Float     @map("quote_qty")
+  orderId    String    @default("") @map("order_id")
+  pnl        Float?
+  pnlPct     Float?    @map("pnl_pct")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  bot        CryptoBot @relation(fields: [botId], references: [id], onDelete: Cascade)
+
+  @@map("crypto_trades")
+}
+
+// 全量股票快照（东方财富缓存）
+model StockSnapshot {
+  code         String   @id              // 股票代码，如 000001
+  name         String   @default("")
+  price        Float    @default(0)      // 最新价 f2
+  changePct    Float    @default(0)      // 涨跌幅% f3
+  changeAmt    Float    @default(0)      // 涨跌额 f4
+  volume       Float    @default(0)      // 成交量(手) f5
+  amount       Float    @default(0)      // 成交额 f6
+  amplitude    Float    @default(0)      // 振幅% f7
+  high         Float    @default(0)      // 最高 f15
+  low          Float    @default(0)      // 最低 f16
+  open         Float    @default(0)      // 今开 f17
+  prevClose    Float    @default(0)      // 昨收 f18
+  turnover     Float    @default(0)      // 换手率% f8
+  pe           Float    @default(0)      // 市盈率(动) f9
+  pb           Float    @default(0)      // 市净率 f23
+  marketCap    Float    @default(0)      // 总市值 f20
+  floatCap     Float    @default(0)      // 流通市值 f21
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("stock_snapshots")
 }

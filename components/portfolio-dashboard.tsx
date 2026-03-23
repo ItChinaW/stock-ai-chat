@@ -196,7 +196,7 @@ export default function PortfolioDashboard({
   ];
 
   return (
-    <section className="mx-auto flex w-full max-w-7xl flex-col gap-4 px-4 py-4 md:gap-6 md:py-6">
+    <section className="flex w-full flex-col gap-4 md:gap-6">
       {/* 汇总卡片：移动端横向三列 */}
       <div className="grid grid-cols-3 gap-3 md:gap-4">
         {summaryCards.map((card) => (

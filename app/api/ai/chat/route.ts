@@ -16,6 +16,7 @@ export async function POST(request: NextRequest) {
   const body = (await request.json()) as {
     messages: { role: "user" | "assistant"; content: string }[];
     model?: string;
+    systemOverride?: string;
     context?: {
       code: string;
       currentPrice?: number;
@@ -50,8 +51,8 @@ export async function POST(request: NextRequest) {
           : undefined,
   });
 
-  let systemPrompt = INVESTMENT_SYSTEM_PROMPT;
-  if (body.context) {
+  let systemPrompt = body.systemOverride ?? INVESTMENT_SYSTEM_PROMPT;
+  if (!body.systemOverride && body.context) {
     const ctx = body.context;
 
     // 用户投资背景优先放在最前面，让 AI 重点结合

@@ -1,27 +1,25 @@
 import { runEngine } from "@/lib/backtest-engine";
+import { toSinaSymbol } from "@/lib/market";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 
-function toSinaCode(symbol: string): string {
-  if (/^(sh|sz)\d+$/.test(symbol)) return symbol;
-  if (/^\d{6}$/.test(symbol)) {
-    const isSH = symbol.startsWith("6") || symbol.startsWith("5") || symbol.startsWith("11");
-    return `${isSH ? "sh" : "sz"}${symbol}`;
-  }
-  return symbol;
-}
-
 async function fetchDailyCandles(symbol: string, startDate: string, endDate: string) {
-  const sinaCode = toSinaCode(symbol);
-  const url = `https://quotes.sina.cn/cn/api/jsonp_v2.php/var%20_kline=/CN_MarketDataService.getKLineData?symbol=${sinaCode}&scale=240&datalen=1000`;
+  const sinaSymbol = toSinaSymbol(symbol);
+  const url = `https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol=${sinaSymbol}&scale=240&ma=no&datalen=1000`;
+
   const res = await fetch(url, { headers: { Referer: "https://finance.sina.com.cn" } });
-  const text = await res.text();
-  const m = text.match(/\(\[(.*)\]\)/s);
-  if (!m) return [];
-  const raw = JSON.parse(`[${m[1]}]`) as { day: string; open: string; high: string; low: string; close: string; volume: string }[];
-  return raw
-    .filter((d) => d.day >= startDate && d.day <= endDate)
-    .map((d) => ({ time: d.day, open: +d.open, high: +d.high, low: +d.low, close: +d.close, volume: +d.volume }));
+  const json = await res.json() as { day: string; open: string; high: string; low: string; close: string; volume: string }[];
+
+  return (Array.isArray(json) ? json : [])
+    .map((item) => ({
+      time: item.day,
+      open: +item.open,
+      high: +item.high,
+      low: +item.low,
+      close: +item.close,
+      volume: +item.volume,
+    }))
+    .filter((d) => d.time >= startDate && d.time <= endDate);
 }
 
 async function runBacktest(id: number) {

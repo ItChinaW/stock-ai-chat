@@ -66,6 +66,7 @@ function EquityChart({ data, trades }: {
     const buyPoints: [number, number, string][] = [];
     const sellPoints: [number, number, string][] = [];
     for (const t of trades) {
+      if (!t.entryDate || !t.exitDate) continue;
       const ei = dateIndex.get(t.entryDate.slice(0, 10));
       const xi = dateIndex.get(t.exitDate.slice(0, 10));
       if (ei != null) buyPoints.push([ei, data[ei]!.value, `买入 ${t.entryDate.slice(0, 10)}\n价格 ${t.entryPrice.toFixed(3)}`]);
@@ -156,7 +157,7 @@ function SignalPanel({ record }: { record: BacktestRecord }) {
   });
 
   const sig = data?.liveSignal;
-  const trades = data?.recentTrades ?? [];
+  const trades = (data?.recentTrades ?? []).filter(t => t.entryDate && t.exitDate && t.entryPrice != null && t.exitPrice != null);
 
   const sigConfig = {
     buy:  { label: "买入信号", bg: "bg-rose-50", border: "border-rose-200", text: "text-rose-600", dot: "bg-rose-500" },
@@ -246,7 +247,7 @@ function ResultPanel({ record }: { record: BacktestRecord }) {
     ? (JSON.parse(record.equityCurve) as { date: string; value: number; benchmark: number }[])
     : [];
   const trades = record.trades
-    ? (JSON.parse(record.trades) as { entryDate: string; exitDate: string; entryPrice: number; exitPrice: number; pnl: number; pnlPct: number }[])
+    ? (JSON.parse(record.trades) as { entryDate: string; exitDate: string; entryPrice: number; exitPrice: number; pnl: number; pnlPct: number }[]).filter(t => t.entryDate && t.exitDate && t.entryPrice != null && t.exitPrice != null)
     : [];
 
   const pnlColor = (v: number | null, reverse = false) => {
@@ -557,6 +558,7 @@ export default function BacktestPage() {
   const oneYearAgo = new Date(Date.now() - 365 * 86400000).toISOString().slice(0, 10);
 
   const [symbol, setSymbol] = useState("");
+  const [symbolFocus, setSymbolFocus] = useState(false);
   const [strategyCode, setStrategyCode] = useState("ma_cross");
   const [startDate, setStartDate] = useState(oneYearAgo);
   const [endDate, setEndDate] = useState(today);
@@ -591,6 +593,17 @@ export default function BacktestPage() {
       const data = query.state.data as BacktestRecord[] | undefined;
       return data?.some((r) => r.status === "pending" || r.status === "running") ? 2000 : false;
     },
+  });
+
+  const { data: watchlist = [] } = useQuery<{ code: string; name: string }[]>({
+    queryKey: ["watchlist"],
+    queryFn: async () => { const r = await fetch("/api/watchlist"); return r.json(); },
+  });
+
+  const watchlistFiltered = (Array.isArray(watchlist) ? watchlist : []).filter(w => {
+    if (!symbol.trim()) return true;
+    const q = symbol.trim().toLowerCase();
+    return (w.code ?? "").toLowerCase().includes(q) || (w.name ?? "").toLowerCase().includes(q);
   });
 
   const selected = list.find((r) => r.id === selectedId) ?? list[0] ?? null;
@@ -637,12 +650,21 @@ export default function BacktestPage() {
     // 查股票名称
     let stockName = symbol.trim();
     try {
-      const r = await fetch(`https://suggest3.sinajs.cn/suggest/type=11,12&key=${encodeURIComponent(symbol.trim())}`);
-      const t = await r.text();
-      const m = t.match(/"([^"]+)"/);
-      if (m) {
-        const parts = m[1].split(",");
-        if (parts[4]) stockName = parts[4];
+      // 先用 quotes 接口查名称（支持A股+美股+ETF）
+      const qr = await fetch(`/api/market/quotes?symbols=${encodeURIComponent(symbol.trim())}`);
+      const qd = await qr.json() as Record<string, { name?: string }>;
+      const qname = qd[symbol.trim().toUpperCase()]?.name;
+      if (qname) {
+        stockName = qname;
+      } else {
+        // fallback: suggest接口
+        const r = await fetch(`/api/market/suggest?key=${encodeURIComponent(symbol.trim())}`);
+        const t = await r.text();
+        const m = t.match(/"([^"]+)"/);
+        if (m) {
+          const parts = m[1].split(",");
+          if (parts[4]) stockName = parts[4];
+        }
       }
     } catch { /* ignore */ }
 
@@ -714,9 +736,25 @@ ${recentTrades.map((t, i) => `${i + 1}. 买入 ${t.entryDate.slice(0, 10)} @ ${t
           {/* 股票 */}
           <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
             <p className="mb-2 text-sm font-medium text-zinc-700">股票代码/名称</p>
-            <input value={symbol} onChange={(e) => setSymbol(e.target.value)}
-              placeholder="例如：600519"
-              className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400" />
+            <div className="relative">
+              <input value={symbol} onChange={(e) => setSymbol(e.target.value)}
+                onFocus={() => setSymbolFocus(true)}
+                onBlur={() => setTimeout(() => setSymbolFocus(false), 150)}
+                placeholder="例如：600519 或 贵州茅台"
+                className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400" />
+              {symbolFocus && watchlistFiltered.length > 0 && (
+                <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-48 overflow-y-auto rounded-xl border border-zinc-200 bg-white shadow-lg">
+                  {watchlistFiltered.map(w => (
+                    <button key={w.code} type="button"
+                      onMouseDown={() => { setSymbol(w.code); setSymbolFocus(false); }}
+                      className="flex w-full items-center justify-between px-3 py-2 text-sm hover:bg-zinc-50">
+                      <span className="font-medium text-zinc-800">{w.name}</span>
+                      <span className="text-xs text-zinc-400">{w.code}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
 
           {/* 周期 */}
@@ -749,9 +787,10 @@ ${recentTrades.map((t, i) => `${i + 1}. 买入 ${t.entryDate.slice(0, 10)} @ ${t
             <p className="mb-2 text-sm font-medium text-zinc-700">策略编辑</p>
             <p className="text-xs text-zinc-400 mb-1.5">选择策略</p>
             <select value={strategyCode} onChange={(e) => setStrategyCode(e.target.value)}
-              className="w-full rounded-lg border border-zinc-200 px-2 py-1.5 text-sm outline-none focus:border-zinc-400 mb-3">
+              className="w-full rounded-lg border border-zinc-200 px-2 py-1.5 text-sm outline-none focus:border-zinc-400 mb-1">
               {STRATEGY_DEFS.map((s) => <option key={s.code} value={s.code}>{s.label}</option>)}
             </select>
+            {strategy.desc && <p className="mb-3 text-xs text-zinc-400 leading-relaxed">{strategy.desc}</p>}
             <p className="text-xs text-zinc-400 mb-2">策略参数</p>
             <div className="flex flex-col gap-2">
               {strategy.params.map((p) => (
@@ -795,7 +834,7 @@ ${recentTrades.map((t, i) => `${i + 1}. 买入 ${t.entryDate.slice(0, 10)} @ ${t
               <div className="flex items-center justify-between mb-4">
                 <p className="text-sm font-semibold text-zinc-800">回测结果</p>
                 <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${selected.status === "done" ? "bg-emerald-100 text-emerald-700" : selected.status === "error" ? "bg-rose-100 text-rose-700" : "bg-amber-100 text-amber-700"}`}>
-                  {selected.status === "done" ? `回测完成 · ${selected.name || selected.symbol}` : selected.status === "error" ? "回测失败" : "回测中..."}
+                  {selected.status === "done" ? `回测完成 · ${selected.name || selected.symbol}${selected.name && selected.name !== selected.symbol ? ` (${selected.symbol})` : ""}` : selected.status === "error" ? "回测失败" : "回测中..."}
                 </span>
               </div>
 

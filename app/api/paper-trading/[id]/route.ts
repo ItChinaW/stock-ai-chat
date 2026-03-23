@@ -1,12 +1,12 @@
 import { getCurrentUserId } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { runEngine } from "@/lib/backtest-engine";
+import { toSinaSymbol } from "@/lib/market";
 import { NextRequest, NextResponse } from "next/server";
 
 type Params = { params: Promise<{ id: string }> };
 
-// 获取单条模拟交易详情，并用最新行情刷新状态
-export async function GET(_req: NextRequest, { params }: Params) {
+export async function GET(req: NextRequest, { params }: Params) {
   const { id } = await params;
   const userId = await getCurrentUserId();
   const record = await prisma.paperTrade.findFirst({
@@ -14,35 +14,42 @@ export async function GET(_req: NextRequest, { params }: Params) {
   });
   if (!record) return NextResponse.json({ error: "not found" }, { status: 404 });
 
-  // 拉取最新 K 线，重新跑策略引擎得到最新状态
+  const searchParams = req.nextUrl.searchParams;
+  const customParams: Record<string, number> = {};
+  searchParams.forEach((v, k) => {
+    const n = parseFloat(v);
+    if (!isNaN(n)) customParams[k] = n;
+  });
+
   try {
     const today = new Date().toISOString().slice(0, 10);
-    const klineUrl = `https://quotes.sina.cn/cn/api/jsonp_v2.php/var%20_${record.symbol}=/CN_MarketDataService.getKLineData?symbol=${record.symbol}&scale=240&ma=no&datalen=250`;
-    const res = await fetch(klineUrl, { headers: { Referer: "https://finance.sina.com.cn" } });
-    const text = await res.text();
-    const m = text.match(/\(\[(.*)\]\)/s);
-    if (m) {
-      type RawCandle = { day: string; open: string; high: string; low: string; close: string; volume: string };
-      const raw = JSON.parse(`[${m[1]}]`) as RawCandle[];
-      const candles = raw
-        .filter((c) => c.day >= record.startDate && c.day <= today)
-        .map((c) => ({
-          date: c.day,
-          open: parseFloat(c.open),
-          high: parseFloat(c.high),
-          low: parseFloat(c.low),
-          close: parseFloat(c.close),
-          volume: parseFloat(c.volume),
-        }));
+    const sinaSymbol = toSinaSymbol(record.symbol);
+    const url = `https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol=${sinaSymbol}&scale=240&ma=no&datalen=500`;
 
-      if (candles.length >= 5) {
-        const result = runEngine(candles, record.strategyCode, {}, record.initCapital, "compound");
-        const lastEquity = result.equityCurve[result.equityCurve.length - 1];
-        const currentValue = lastEquity?.value ?? record.initCapital;
-        const totalPnl = currentValue - record.initCapital;
-        const totalReturn = totalPnl / record.initCapital;
+    const res = await fetch(url, { headers: { Referer: "https://finance.sina.com.cn" } });
+    const json = await res.json() as { day: string; open: string; high: string; low: string; close: string; volume: string }[];
 
-        const updated = await prisma.paperTrade.update({
+    const candles = (Array.isArray(json) ? json : [])
+      .map((item) => ({
+        date: item.day,
+        time: item.day,
+        open: +item.open,
+        high: +item.high,
+        low: +item.low,
+        close: +item.close,
+        volume: +item.volume,
+      }))
+      .filter((c) => c.time >= record.startDate && c.time <= today);
+
+    if (candles.length >= 5) {
+      const result = runEngine(candles, record.strategyCode, customParams, record.initCapital, "compound");
+      const lastEquity = result.equityCurve[result.equityCurve.length - 1];
+      const currentValue = lastEquity?.value ?? record.initCapital;
+      const totalPnl = currentValue - record.initCapital;
+      const totalReturn = totalPnl / record.initCapital;
+
+      if (Object.keys(customParams).length === 0) {
+        await prisma.paperTrade.update({
           where: { id: record.id },
           data: {
             currentValue,
@@ -54,8 +61,19 @@ export async function GET(_req: NextRequest, { params }: Params) {
             trades: JSON.stringify(result.trades),
           },
         });
-        return NextResponse.json(updated);
       }
+
+      return NextResponse.json({
+        ...record,
+        currentValue,
+        totalPnl,
+        totalReturn,
+        inPosition: result.inPosition ?? false,
+        entryPrice: result.entryPrice ?? null,
+        tradeCount: result.tradeCount,
+        trades: JSON.stringify(result.trades),
+        equityCurve: result.equityCurve,
+      });
     }
   } catch { /* 行情获取失败，返回缓存数据 */ }
 

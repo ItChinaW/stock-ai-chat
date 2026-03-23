@@ -99,7 +99,7 @@ export default function Watchlist({
       </div>
 
       {/* 自选卡片列表 */}
-      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+      <div className="grid grid-cols-2 gap-2">
         {items.map((item) => {
           const q = quotes[item.code];
           const positive = (q?.changePercent ?? 0) >= 0;
@@ -110,7 +110,7 @@ export default function Watchlist({
               tabIndex={0}
               onClick={() => onSelect(item.code, q)}
               onKeyDown={(e) => e.key === "Enter" && onSelect(item.code, q)}
-              className="flex items-center justify-between rounded-xl border border-zinc-100 bg-white p-3 text-left shadow-sm transition hover:border-zinc-300 hover:shadow-md cursor-pointer"
+              className="flex w-full items-center justify-between rounded-xl border border-zinc-100 bg-white p-3 text-left shadow-sm transition hover:border-zinc-300 hover:shadow-md cursor-pointer"
             >
               <div>
                 <p className="font-semibold text-zinc-800">{quotes[item.code]?.name || item.name || item.code}</p>

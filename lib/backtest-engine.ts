@@ -13,6 +13,8 @@ export type BacktestResult = {
   avgWin: number; avgLoss: number; profitFactor: number;
   equityCurve: { date: string; value: number; benchmark: number }[];
   trades: Trade[];
+  inPosition: boolean;
+  entryPrice: number | null;
 };
 
 // ── 指标工具 ──────────────────────────────────────────────
@@ -184,30 +186,33 @@ function calcRoc(closes: number[], p = 12): (number | null)[] {
 export type StrategyDef = {
   code: string;
   label: string;
+  desc: string;
   params: { key: string; label: string; default: number }[];
 };
 
 export const STRATEGY_DEFS: StrategyDef[] = [
-  { code: "ma_cross",  label: "双均线策略",          params: [{ key: "fastPeriod", label: "快线周期", default: 20 }, { key: "slowPeriod", label: "慢线周期", default: 60 }] },
-  { code: "ema_cross", label: "EMA交叉策略",         params: [{ key: "fastPeriod", label: "快线周期", default: 12 }, { key: "slowPeriod", label: "慢线周期", default: 26 }] },
-  { code: "triple_ma", label: "三均线策略",           params: [{ key: "p1", label: "短期", default: 5 }, { key: "p2", label: "中期", default: 20 }, { key: "p3", label: "长期", default: 60 }] },
-  { code: "breakout",  label: "均线突破策略",         params: [{ key: "breakoutPeriod", label: "突破周期", default: 20 }] },
-  { code: "macd",      label: "MACD策略",            params: [{ key: "fast", label: "快线", default: 12 }, { key: "slow", label: "慢线", default: 26 }, { key: "signal", label: "信号线", default: 9 }] },
-  { code: "kdj",       label: "KDJ策略",             params: [{ key: "n", label: "周期", default: 9 }, { key: "overbought", label: "超买线", default: 80 }, { key: "oversold", label: "超卖线", default: 20 }] },
-  { code: "macd_kdj",  label: "MACD-KDJ组合策略",    params: [{ key: "fast", label: "MACD快线", default: 12 }, { key: "slow", label: "MACD慢线", default: 26 }, { key: "signal", label: "信号线", default: 9 }, { key: "n", label: "KDJ周期", default: 9 }] },
-  { code: "rsi",       label: "RSI策略",             params: [{ key: "rsiPeriod", label: "RSI周期", default: 14 }, { key: "rsiOversold", label: "超卖线", default: 30 }, { key: "rsiOverbought", label: "超买线", default: 70 }] },
-  { code: "boll",      label: "布林带策略",           params: [{ key: "period", label: "周期", default: 20 }, { key: "mult", label: "倍数", default: 2 }] },
-  { code: "boll_rsi",  label: "BOLL-RSI组合策略",    params: [{ key: "bollPeriod", label: "布林周期", default: 20 }, { key: "rsiPeriod", label: "RSI周期", default: 14 }, { key: "rsiOversold", label: "超卖线", default: 35 }] },
-  { code: "sar",       label: "SAR抛物线策略",        params: [{ key: "step", label: "步长(×0.01)", default: 2 }, { key: "max", label: "最大值(×0.01)", default: 20 }] },
-  { code: "dmi",       label: "DMI趋向指标策略",      params: [{ key: "period", label: "周期", default: 14 }, { key: "adxThreshold", label: "ADX阈值", default: 25 }] },
-  { code: "momentum",  label: "动量策略",             params: [{ key: "period", label: "动量周期", default: 20 }, { key: "threshold", label: "阈值(%)", default: 0 }] },
-  { code: "roc",       label: "ROC变动率策略",        params: [{ key: "period", label: "ROC周期", default: 12 }, { key: "signal", label: "信号周期", default: 6 }] },
-  { code: "cci",       label: "CCI策略",             params: [{ key: "period", label: "周期", default: 20 }, { key: "overbought", label: "超买线", default: 100 }, { key: "oversold", label: "超卖线", default: -100 }] },
-  { code: "trix",      label: "TRIX三重指数平滑策略", params: [{ key: "period", label: "TRIX周期", default: 12 }, { key: "signal", label: "信号周期", default: 9 }] },
-  { code: "bias",      label: "BIAS乖离率策略",       params: [{ key: "period", label: "均线周期", default: 20 }, { key: "buyBias", label: "买入乖离(%)", default: -5 }, { key: "sellBias", label: "卖出乖离(%)", default: 5 }] },
-  { code: "turtle",    label: "海龟交易策略",          params: [{ key: "entryPeriod", label: "入场周期", default: 20 }, { key: "exitPeriod", label: "出场周期", default: 10 }] },
-  { code: "atr_break", label: "ATR波动率突破策略",    params: [{ key: "maPeriod", label: "均线周期", default: 20 }, { key: "atrPeriod", label: "ATR周期", default: 14 }, { key: "atrMult", label: "ATR倍数", default: 1.5 }] },
-  { code: "vol_break", label: "波动率突破策略",        params: [{ key: "period", label: "周期", default: 20 }, { key: "mult", label: "布林倍数", default: 2 }] },
+  { code: "ma_cross",  label: "双均线策略",          desc: "短期均线上穿长期均线买入，下穿卖出。最经典的趋势跟踪方法，适合趋势明显的行情。", params: [{ key: "fastPeriod", label: "快线周期", default: 20 }, { key: "slowPeriod", label: "慢线周期", default: 60 }] },
+  { code: "ema_cross", label: "EMA交叉策略",         desc: "与双均线类似，但用指数移动均线，对近期价格更敏感，信号更快但噪音也更多。", params: [{ key: "fastPeriod", label: "快线周期", default: 12 }, { key: "slowPeriod", label: "慢线周期", default: 26 }] },
+  { code: "triple_ma", label: "三均线策略",           desc: "短、中、长三条均线同时排列向上才买入，过滤掉更多假信号，信号更可靠但更少。", params: [{ key: "p1", label: "短期", default: 5 }, { key: "p2", label: "中期", default: 20 }, { key: "p3", label: "长期", default: 60 }] },
+  { code: "breakout",  label: "均线突破策略",         desc: "价格突破均线时买入，跌破时卖出。简单直接，适合震荡后突破的行情。", params: [{ key: "breakoutPeriod", label: "突破周期", default: 20 }] },
+  { code: "macd",      label: "MACD策略",            desc: "通过两条均线的差值判断趋势动能。金叉买入、死叉卖出，是最常用的技术指标之一。", params: [{ key: "fast", label: "快线", default: 12 }, { key: "slow", label: "慢线", default: 26 }, { key: "signal", label: "信号线", default: 9 }] },
+  { code: "kdj",       label: "KDJ策略",             desc: "衡量价格超买超卖程度。K线从低位上穿D线买入，从高位下穿卖出，适合震荡行情。", params: [{ key: "n", label: "周期", default: 9 }, { key: "overbought", label: "超买线", default: 80 }, { key: "oversold", label: "超卖线", default: 20 }] },
+  { code: "macd_kdj",  label: "MACD-KDJ组合策略",    desc: "MACD和KDJ同时发出信号才操作，双重确认减少误判，信号更少但更准。", params: [{ key: "fast", label: "MACD快线", default: 12 }, { key: "slow", label: "MACD慢线", default: 26 }, { key: "signal", label: "信号线", default: 9 }, { key: "n", label: "KDJ周期", default: 9 }] },
+  { code: "rsi",       label: "RSI策略",             desc: "衡量涨跌力度。RSI跌到超卖区（如30以下）买入，涨到超买区（如70以上）卖出，适合震荡市。", params: [{ key: "rsiPeriod", label: "RSI周期", default: 14 }, { key: "rsiOversold", label: "超卖线", default: 30 }, { key: "rsiOverbought", label: "超买线", default: 70 }] },
+  { code: "boll",      label: "布林带策略",           desc: "价格触碰下轨买入，触碰上轨卖出。布林带会随波动率自动扩缩，适合均值回归行情。", params: [{ key: "period", label: "周期", default: 20 }, { key: "mult", label: "倍数", default: 2 }] },
+  { code: "boll_rsi",  label: "BOLL-RSI组合策略",    desc: "布林带下轨 + RSI超卖同时满足才买入，双重过滤，减少在下跌趋势中抄底的风险。", params: [{ key: "bollPeriod", label: "布林周期", default: 20 }, { key: "rsiPeriod", label: "RSI周期", default: 14 }, { key: "rsiOversold", label: "超卖线", default: 35 }] },
+  { code: "sar",       label: "SAR抛物线策略",        desc: "价格在SAR点上方持有，跌破SAR点卖出。会随趋势自动追踪止损位，适合强趋势行情。", params: [{ key: "step", label: "步长(×0.01)", default: 2 }, { key: "max", label: "最大值(×0.01)", default: 20 }] },
+  { code: "dmi",       label: "DMI趋向指标策略",      desc: "通过+DI和-DI判断多空力量对比，ADX衡量趋势强度。趋势强时跟随方向操作。", params: [{ key: "period", label: "周期", default: 14 }, { key: "adxThreshold", label: "ADX阈值", default: 25 }] },
+  { code: "momentum",  label: "动量策略",             desc: "涨得快的继续买，跌得快的继续卖。基于「强者恒强」的惯性原理，适合趋势延续行情。", params: [{ key: "period", label: "动量周期", default: 20 }, { key: "threshold", label: "阈值(%)", default: 0 }] },
+  { code: "roc",       label: "ROC变动率策略",        desc: "计算当前价格相对N天前的变化率，ROC上穿信号线买入，下穿卖出，捕捉加速上涨机会。", params: [{ key: "period", label: "ROC周期", default: 12 }, { key: "signal", label: "信号周期", default: 6 }] },
+  { code: "cci",       label: "CCI策略",             desc: "衡量价格偏离均值的程度。CCI从超卖区回升买入，从超买区回落卖出，适合周期性波动品种。", params: [{ key: "period", label: "周期", default: 20 }, { key: "overbought", label: "超买线", default: 100 }, { key: "oversold", label: "超卖线", default: -100 }] },
+  { code: "trix",      label: "TRIX三重指数平滑策略", desc: "对均线做三次平滑处理，过滤掉短期噪音，信号更稳定，适合中长线趋势跟踪。", params: [{ key: "period", label: "TRIX周期", default: 12 }, { key: "signal", label: "信号周期", default: 9 }] },
+  { code: "bias",      label: "BIAS乖离率策略",       desc: "价格偏离均线过远时会回归。跌得太多（乖离率为负）买入，涨得太多卖出，适合震荡市。", params: [{ key: "period", label: "均线周期", default: 20 }, { key: "buyBias", label: "买入乖离(%)", default: -5 }, { key: "sellBias", label: "卖出乖离(%)", default: 5 }] },
+  { code: "turtle",    label: "海龟交易策略",          desc: "价格突破N日最高点买入，跌破M日最低点卖出。华尔街经典趋势跟踪系统，适合大趋势行情。", params: [{ key: "entryPeriod", label: "入场周期", default: 20 }, { key: "exitPeriod", label: "出场周期", default: 10 }] },
+  { code: "atr_break", label: "ATR波动率突破策略",    desc: "价格突破「均线 + ATR倍数」时买入，用波动率动态调整突破门槛，适合波动较大的加密货币。", params: [{ key: "maPeriod", label: "均线周期", default: 20 }, { key: "atrPeriod", label: "ATR周期", default: 14 }, { key: "atrMult", label: "ATR倍数", default: 1.5 }] },
+  { code: "vol_break", label: "波动率突破策略",        desc: "布林带收窄后价格突破上轨买入，跌破下轨卖出。专门捕捉低波动后的爆发行情。", params: [{ key: "period", label: "周期", default: 20 }, { key: "mult", label: "布林倍数", default: 2 }] },
+  { code: "dca",       label: "定期定额定投",           desc: "每隔固定周期无条件买入固定金额，不管涨跌都坚持买入，最终一次性卖出。适合长期持有、懒人投资。", params: [{ key: "interval", label: "定投间隔(根K线)", default: 7 }, { key: "perAmount", label: "每次定投金额", default: 1000 }] },
+  { code: "va",        label: "价值平均定投",           desc: "目标市值每期增加固定金额，市值低于目标时多买，高于目标时少买甚至卖出，比定期定额更聪明。", params: [{ key: "interval", label: "定投间隔(根K线)", default: 7 }, { key: "perAmount", label: "每期目标增量", default: 1000 }, { key: "growthRate", label: "每期目标增长(%)", default: 1 }] },
 ];
 
 // ── 信号生成 ──────────────────────────────────────────────
@@ -355,12 +360,127 @@ function genSignals(candles: Candle[], code: string, p: BacktestParams): (1 | -1
   return sig;
 }
 
+// ── 定投引擎 ──────────────────────────────────────────────
+
+function runDCA(candles: Candle[], strategyCode: string, params: BacktestParams, initCapital: number): BacktestResult {
+  const n = candles.length;
+  const closes = candles.map(c => c.close);
+  const interval = Math.max(1, Math.round(params.interval ?? 7));
+  const growthRate = (params.growthRate ?? 1) / 100;
+
+  const trades: Trade[] = [];
+  const equity: number[] = [];
+
+  let cash = initCapital;
+  let shares = 0;
+  let totalInvested = 0;
+  const perAmount = params.perAmount ?? initCapital / Math.max(10, Math.floor(n / interval));
+  let targetValue = 0;
+
+  // 记录每次买入，用于图表买入点
+  const buyLogs: { date: string; price: number; qty: number; amount: number }[] = [];
+
+  for (let i = 0; i < n; i++) {
+    const price = closes[i]!;
+
+    if (i % interval === 0 && i < n - 1) {
+      if (strategyCode === "dca") {
+        const buyAmount = Math.min(perAmount, cash);
+        if (buyAmount > 0 && price > 0) {
+          const qty = buyAmount / price;
+          shares += qty;
+          cash -= buyAmount;
+          totalInvested += buyAmount;
+          buyLogs.push({ date: candles[i]!.time, price, qty, amount: buyAmount });
+        }
+      } else {
+        // 价值平均
+        const period = Math.floor(i / interval);
+        targetValue = perAmount * (period + 1) * Math.pow(1 + growthRate, period);
+        const currentValue = shares * price;
+        const diff = targetValue - currentValue;
+        if (diff > 0) {
+          const buyAmount = Math.min(diff, cash);
+          if (buyAmount > 0) {
+            const qty = buyAmount / price;
+            shares += qty;
+            cash -= buyAmount;
+            totalInvested += buyAmount;
+            buyLogs.push({ date: candles[i]!.time, price, qty, amount: buyAmount });
+          }
+        } else if (diff < 0 && shares > 0) {
+          const sellShares = Math.min(Math.abs(diff) / price, shares);
+          const proceeds = sellShares * price;
+          const avgCost = totalInvested / shares;
+          const pnl = (price - avgCost) * sellShares;
+          shares -= sellShares;
+          cash += proceeds;
+          totalInvested = Math.max(0, totalInvested - avgCost * sellShares);
+          trades.push({ entryDate: candles[i]!.time, exitDate: candles[i]!.time, entryPrice: avgCost, exitPrice: price, pnl, pnlPct: (price - avgCost) / avgCost });
+        }
+      }
+    }
+
+    equity.push(cash + shares * price);
+  }
+
+  // 最后一根K线全部卖出，每笔买入对应一笔卖出
+  const lastPrice = closes[n - 1]!;
+  const lastDate = candles[n - 1]!.time;
+  for (const buy of buyLogs) {
+    const pnl = (lastPrice - buy.price) * buy.qty;
+    trades.push({ entryDate: buy.date, exitDate: lastDate, entryPrice: buy.price, exitPrice: lastPrice, pnl, pnlPct: (lastPrice - buy.price) / buy.price });
+  }
+
+  const finalValue = cash + shares * lastPrice;
+  const totalPnl = finalValue - initCapital;
+  const totalReturn = totalPnl / initCapital;
+  const days = Math.max(1, (new Date(candles[n-1]!.time).getTime() - new Date(candles[0]!.time).getTime()) / 86400000);
+  const annualReturn = Math.pow(1 + totalReturn, 365 / days) - 1;
+
+  let peak = initCapital, maxDrawdown = 0;
+  for (const v of equity) { if (v > peak) peak = v; const dd = (peak - v) / peak; if (dd > maxDrawdown) maxDrawdown = dd; }
+
+  const dailyR = equity.slice(1).map((v, i) => (v - equity[i]!) / equity[i]!);
+  const meanR = dailyR.reduce((a, b) => a + b, 0) / (dailyR.length || 1);
+  const stdR = Math.sqrt(dailyR.reduce((s, r) => s + (r - meanR) ** 2, 0) / (dailyR.length || 1));
+  const rfDaily = 0.02 / 252;
+  const sharpe = stdR > 0 ? ((meanR - rfDaily) * 252) / (stdR * Math.sqrt(252)) : 0;
+  const downR = dailyR.filter(r => r < rfDaily);
+  const downStd = downR.length > 1 ? Math.sqrt(downR.reduce((s, r) => s + (r - rfDaily) ** 2, 0) / downR.length) : 0;
+  const sortino = downStd > 0 ? ((meanR - rfDaily) * 252) / (downStd * Math.sqrt(252)) : 0;
+  const calmar = maxDrawdown > 0 ? annualReturn / maxDrawdown : 0;
+
+  const wins = trades.filter(t => t.pnl > 0), losses = trades.filter(t => t.pnl <= 0);
+  const winRate = trades.length > 0 ? wins.length / trades.length : 0;
+  const avgWin = wins.length > 0 ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length : 0;
+  const avgLoss = losses.length > 0 ? losses.reduce((s, t) => s + t.pnl, 0) / losses.length : 0;
+  const totalWin = wins.reduce((s, t) => s + t.pnl, 0);
+  const totalLoss = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
+  const profitFactor = totalLoss > 0 ? totalWin / totalLoss : totalWin > 0 ? 999 : 0;
+
+  const step = Math.max(1, Math.floor(n / 300));
+  const benchmarkStart = closes[0]!;
+  const equityCurve = candles.filter((_, i) => i % step === 0).map((c, idx) => ({
+    date: c.time.slice(0, 10),
+    value: Math.round(equity[idx * step] ?? initCapital),
+    benchmark: Math.round(initCapital * (c.close / benchmarkStart)),
+  }));
+
+  return { totalReturn, totalPnl, annualReturn, maxDrawdown, sharpe, sortino, calmar, tradeCount: buyLogs.length, winRate, avgHoldDays: days / Math.max(1, buyLogs.length), avgWin, avgLoss, profitFactor, equityCurve, trades, inPosition: shares > 0, entryPrice: shares > 0 ? lastPrice : null };
+}
+
 // ── 主引擎 ────────────────────────────────────────────────
 
 export function runEngine(
   candles: Candle[], strategyCode: string, params: BacktestParams,
   initCapital: number, mode: "simple" | "compound",
 ): BacktestResult {
+  // ── 定投策略单独处理 ──────────────────────────────────
+  if (strategyCode === "dca" || strategyCode === "va") {
+    return runDCA(candles, strategyCode, params, initCapital);
+  }
+
   const n = candles.length;
   const closes = candles.map(c => c.close);
   const signals = genSignals(candles, strategyCode, params);
@@ -396,6 +516,10 @@ export function runEngine(
     }
     equity.push(capital);
   }
+
+  // 记录循环结束时的真实持仓状态（在强制平仓前）
+  const finalInPosition = inPosition;
+  const finalEntryPrice = inPosition ? entryPrice : null;
 
   if (inPosition) {
     const last = candles[n - 1]!;
@@ -442,7 +566,7 @@ export function runEngine(
     benchmark: Math.round(initCapital * (c.close / benchmarkStart)),
   }));
 
-  return { totalReturn, totalPnl, annualReturn, maxDrawdown, sharpe, sortino, calmar, tradeCount: trades.length, winRate, avgHoldDays, avgWin, avgLoss, profitFactor, equityCurve, trades };
+  return { totalReturn, totalPnl, annualReturn, maxDrawdown, sharpe, sortino, calmar, tradeCount: trades.length, winRate, avgHoldDays, avgWin, avgLoss, profitFactor, equityCurve, trades, inPosition: finalInPosition, entryPrice: finalEntryPrice };
 }
 
 // ── 实时信号 ──────────────────────────────────────────────
