@@ -81,6 +81,59 @@ async function fetchSinaQuotes(symbols: string[]): Promise<QuoteItem[]> {
   }
 }
 
+// 东方财富 secid 映射，key 为原始 symbol
+const EASTMONEY_SYMBOL_MAP: Record<string, { secid: string; currency: string }> = {
+  "^N225": { secid: "100.N225", currency: "JPY" },
+  "^KS11": { secid: "100.KS11", currency: "KRW" },
+};
+
+async function fetchEastMoneyQuotes(symbols: string[]): Promise<QuoteItem[]> {
+  if (symbols.length === 0) return [];
+
+  const secids = symbols.map((s) => EASTMONEY_SYMBOL_MAP[s]!.secid).join(",");
+  const url = `https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&fields=f1,f2,f3,f4,f12,f14&secids=${secids}`;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+
+  try {
+    const res = await fetch(url, { cache: "no-store", signal: controller.signal });
+    const json = await res.json() as {
+      data: { diff: { f2: number; f3: number; f4: number; f12: string; f14: string }[] };
+    };
+
+    const diffMap = new Map(json.data.diff.map((d) => [d.f12, d]));
+
+    return symbols.map((symbol) => {
+      const meta = EASTMONEY_SYMBOL_MAP[symbol]!;
+      const key = meta.secid.split(".")[1]!;
+      const d = diffMap.get(key);
+      if (!d || !d.f2) return null;
+      return {
+        symbol,
+        name: d.f14,
+        price: d.f2,
+        change: d.f4,
+        changePercent: d.f3,
+        previousClose: d.f2 - d.f4,
+        currency: meta.currency,
+      } satisfies QuoteItem;
+    }).filter((v): v is QuoteItem => v !== null);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export async function fetchYahooQuotes(symbols: string[]): Promise<QuoteItem[]> {
-  return fetchSinaQuotes(symbols);
+  const emSymbols = symbols.filter((s) => s in EASTMONEY_SYMBOL_MAP);
+  const sinaSymbols = symbols.filter((s) => !(s in EASTMONEY_SYMBOL_MAP));
+
+  const [emResults, sinaResults] = await Promise.all([
+    fetchEastMoneyQuotes(emSymbols),
+    fetchSinaQuotes(sinaSymbols),
+  ]);
+
+  // 按原始顺序返回
+  const resultMap = new Map([...emResults, ...sinaResults].map((r) => [r.symbol, r]));
+  return symbols.map((s) => resultMap.get(s)).filter((v): v is QuoteItem => v !== null);
 }

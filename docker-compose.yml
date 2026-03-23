@@ -1,0 +1,39 @@
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: mysql://vibe:vibe_password@db:3306/vibe_portfolio
+      # AI Keys（按需填写）
+      # DEEPSEEK_API_KEY: ""
+      # OPENAI_API_KEY: ""
+      # DASHSCOPE_API_KEY: ""
+      # ZHIPU_API_KEY: ""
+      # VISION_PROVIDER: zhipu
+      # BIAN_API_KEY: ""
+      # BIAN_API_SECRET: ""
+      CRON_SECRET: "change-me-in-production"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_DATABASE: vibe_portfolio
+      MYSQL_USER: vibe
+      MYSQL_PASSWORD: vibe_password
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "vibe", "-pvibe_password"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  mysql_data:

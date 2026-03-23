@@ -74,6 +74,12 @@ export default function PortfolioDashboard({
   const [rows, setRows] = useState<Row[]>([]);
   const [showImport, setShowImport] = useState(false);
 
+  const { data: aiConfig } = useQuery<{ visionEnabled: boolean }>({
+    queryKey: ["ai-config"],
+    queryFn: async () => { const r = await fetch("/api/ai/config"); return r.json(); },
+    staleTime: 60_000,
+  });
+
   const positionsQuery = useQuery({ queryKey: ["positions"], queryFn: fetchPositions });
 
   const symbols = useMemo(
@@ -218,6 +224,7 @@ export default function PortfolioDashboard({
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-base font-semibold text-zinc-800 md:text-lg">持仓编辑</h2>
           <div className="flex gap-2">
+            {aiConfig?.visionEnabled && (
             <button
               type="button"
               onClick={() => setShowImport(true)}
@@ -226,6 +233,7 @@ export default function PortfolioDashboard({
               <Upload size={15} />
               导入持仓
             </button>
+            )}
             <button
               type="button"
               onClick={addRow}

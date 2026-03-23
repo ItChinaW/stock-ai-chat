@@ -5,6 +5,8 @@ const TRACKED_INDICES = [
   { key: "nasdaq", label: "纳斯达克", symbol: ".IXIC" },
   { key: "sse",    label: "上证指数", symbol: "sh000001" },
   { key: "szse",   label: "深证成指", symbol: "sz399001" },
+  { key: "nikkei", label: "日经225",  symbol: "^N225" },
+  { key: "kospi",  label: "韩国综合", symbol: "^KS11" },
 ];
 
 export async function GET() {

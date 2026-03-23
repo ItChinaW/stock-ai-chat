@@ -8,8 +8,9 @@ import ReactMarkdown from "react-markdown";
 
 type Message = { role: "user" | "assistant"; content: string };
 type Position = { id: number; code: string; name: string; costPrice: number; amount: number };
+type AiConfig = { aiEnabled: boolean; models: { id: string; label: string }[]; visionEnabled: boolean };
 
-const MODELS = [
+const FALLBACK_MODELS = [
   { id: "deepseek-chat", label: "DeepSeek" },
   { id: "qwen-plus", label: "通义千问" },
   { id: "glm-4-flash", label: "智谱 GLM" },
@@ -107,6 +108,12 @@ export default function AiChatModal({
     enabled: open,
     staleTime: Infinity,
   });
+  const { data: aiConfig } = useQuery<AiConfig>({
+    queryKey: ["ai-config"],
+    queryFn: async () => { const r = await fetch("/api/ai/config"); return r.json(); },
+    staleTime: 60_000,
+  });
+  const availableModels = aiConfig?.models?.length ? aiConfig.models : FALLBACK_MODELS;
 
   // 切换 code 时恢复策略选择
   useEffect(() => {
@@ -325,7 +332,7 @@ export default function AiChatModal({
           <div className="flex flex-wrap items-center gap-2 border-b border-zinc-100 px-4 py-2">
             <select value={model} onChange={e => handleModelChange(e.target.value)}
               className="rounded-md border border-zinc-200 px-2 py-1 text-xs outline-none">
-              {MODELS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+              {availableModels.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
             </select>
 
             <select value={strategyCode} onChange={e => handleStrategyChange(e.target.value)}

@@ -3,7 +3,7 @@
 import { STRATEGY_DEFS } from "@/lib/backtest-engine";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import * as echarts from "echarts";
-import { ArrowLeft, Bot, FileText, Play, Send, Square, X } from "lucide-react";
+import { ArrowLeft, BarChart2, Bot, FileText, Play, Send, Square, X } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -50,6 +50,161 @@ function fmt(v: number | null, isPercent = false, digits = 2) {
   if (v == null) return "-";
   const n = isPercent ? v * 100 : v;
   return `${n >= 0 ? "+" : ""}${n.toFixed(digits)}${isPercent ? "%" : ""}`;
+}
+
+type CompareResult = {
+  code: string; label: string;
+  totalReturn: number; annualReturn: number;
+  maxDrawdown: number; sharpe: number; winRate: number; tradeCount: number;
+};
+
+function CompareChart({ results, metric }: { results: CompareResult[]; metric: "annualReturn" | "maxDrawdown" | "sharpe" | "winRate" }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!ref.current || results.length === 0) return;
+    const chart = echarts.init(ref.current);
+    const sorted = [...results].sort((a, b) => {
+      if (metric === "maxDrawdown") return a[metric] - b[metric];
+      return b[metric] - a[metric];
+    });
+    const labels = sorted.map((r) => r.label);
+    const values = sorted.map((r) => {
+      const v = r[metric];
+      if (metric === "annualReturn" || metric === "winRate") return +(v * 100).toFixed(2);
+      if (metric === "maxDrawdown") return +(v * 100).toFixed(2);
+      return +v.toFixed(3);
+    });
+    const isPercent = metric !== "sharpe";
+    const colors = values.map((v) =>
+      metric === "maxDrawdown" ? "#10b981" : v >= 0 ? "#ef4444" : "#10b981"
+    );
+    chart.setOption({
+      animation: false,
+      tooltip: { trigger: "axis", formatter: (p: unknown) => {
+        const ps = p as { name: string; value: number }[];
+        return `${ps[0]?.name}<br/>${values[labels.indexOf(ps[0]?.name ?? "")]}${isPercent ? "%" : ""}`;
+      }},
+      grid: { left: 90, right: 16, top: 12, bottom: 8 },
+      xAxis: { type: "value", axisLabel: { fontSize: 10, formatter: (v: number) => `${v}${isPercent ? "%" : ""}` } },
+      yAxis: { type: "category", data: labels, axisLabel: { fontSize: 10, width: 80, overflow: "truncate" } },
+      series: [{ type: "bar", data: values.map((v, i) => ({ value: v, itemStyle: { color: colors[i] } })), barMaxWidth: 20 }],
+    });
+    const ro = new ResizeObserver(() => chart.resize());
+    ro.observe(ref.current);
+    return () => { ro.disconnect(); chart.dispose(); };
+  }, [results, metric]);
+  return <div ref={ref} className="w-full" style={{ height: Math.max(240, results.length * 22) }} />;
+}
+
+function ComparePanel({ symbol, startDate, endDate, initCapital, mode }: {
+  symbol: string; startDate: string; endDate: string; initCapital: string; mode: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [metric, setMetric] = useState<"annualReturn" | "maxDrawdown" | "sharpe" | "winRate">("annualReturn");
+
+  const { data, isFetching, refetch } = useQuery<{ results: CompareResult[] }>({
+    queryKey: ["backtest-compare", symbol, startDate, endDate, initCapital, mode],
+    queryFn: async () => {
+      const qs = new URLSearchParams({ symbol, startDate, endDate, initCapital, mode });
+      const r = await fetch(`/api/backtest/compare?${qs}`);
+      return r.json();
+    },
+    enabled: false,
+    staleTime: 5 * 60_000,
+  });
+
+  function handleOpen() {
+    setOpen(true);
+    if (!data) void refetch();
+  }
+
+  const METRICS = [
+    { key: "annualReturn" as const, label: "年化收益" },
+    { key: "maxDrawdown" as const, label: "最大回撤" },
+    { key: "sharpe" as const, label: "夏普比率" },
+    { key: "winRate" as const, label: "胜率" },
+  ];
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={handleOpen}
+        disabled={!symbol}
+        className="flex items-center gap-1.5 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs text-zinc-600 hover:bg-zinc-50 disabled:opacity-40"
+      >
+        <BarChart2 size={13} />
+        策略对比
+      </button>
+
+      {open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="flex w-full max-w-3xl flex-col gap-4 rounded-2xl bg-white p-5 shadow-xl max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="font-semibold text-zinc-900">策略横向对比</p>
+                <p className="text-xs text-zinc-400">{symbol} · {startDate} ~ {endDate} · 默认参数</p>
+              </div>
+              <button type="button" onClick={() => setOpen(false)} className="rounded-lg p-1.5 hover:bg-zinc-100">
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="flex gap-2 flex-wrap">
+              {METRICS.map((m) => (
+                <button
+                  key={m.key}
+                  type="button"
+                  onClick={() => setMetric(m.key)}
+                  className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${metric === m.key ? "bg-zinc-900 text-white" : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"}`}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+
+            {isFetching && <div className="flex h-40 items-center justify-center text-sm text-zinc-400">计算中，请稍候...</div>}
+
+            {data?.results && !isFetching && (
+              <>
+                <CompareChart results={data.results} metric={metric} />
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b border-zinc-100 text-zinc-400">
+                        <th className="py-2 text-left font-medium">策略</th>
+                        <th className="py-2 text-right font-medium">年化收益</th>
+                        <th className="py-2 text-right font-medium">最大回撤</th>
+                        <th className="py-2 text-right font-medium">夏普</th>
+                        <th className="py-2 text-right font-medium">胜率</th>
+                        <th className="py-2 text-right font-medium">交易次数</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...data.results]
+                        .sort((a, b) => b.annualReturn - a.annualReturn)
+                        .map((r, i) => (
+                          <tr key={r.code} className={`border-b border-zinc-50 ${i === 0 ? "bg-rose-50" : ""}`}>
+                            <td className="py-1.5 font-medium text-zinc-700">{r.label}</td>
+                            <td className={`py-1.5 text-right font-semibold ${r.annualReturn >= 0 ? "text-rose-500" : "text-emerald-600"}`}>
+                              {r.annualReturn >= 0 ? "+" : ""}{(r.annualReturn * 100).toFixed(2)}%
+                            </td>
+                            <td className="py-1.5 text-right text-emerald-600">-{(r.maxDrawdown * 100).toFixed(2)}%</td>
+                            <td className="py-1.5 text-right text-zinc-700">{r.sharpe.toFixed(2)}</td>
+                            <td className="py-1.5 text-right text-zinc-700">{(r.winRate * 100).toFixed(1)}%</td>
+                            <td className="py-1.5 text-right text-zinc-500">{r.tradeCount}</td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </>
+  );
 }
 
 function EquityChart({ data, trades }: {
@@ -819,11 +974,14 @@ ${recentTrades.map((t, i) => `${i + 1}. 买入 ${t.entryDate.slice(0, 10)} @ ${t
             </div>
           </div>
 
-          <button type="button" onClick={() => void handleSubmit()} disabled={submitting || !symbol.trim()}
-            className="flex items-center justify-center gap-2 rounded-xl bg-zinc-900 py-3 text-sm font-medium text-white hover:bg-zinc-700 disabled:opacity-40">
-            <Play size={15} />
-            {submitting ? "提交中..." : "执行回测"}
-          </button>
+          <div className="flex gap-2">
+            <button type="button" onClick={() => void handleSubmit()} disabled={submitting || !symbol.trim()}
+              className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-zinc-900 py-3 text-sm font-medium text-white hover:bg-zinc-700 disabled:opacity-40">
+              <Play size={15} />
+              {submitting ? "提交中..." : "执行回测"}
+            </button>
+            <ComparePanel symbol={symbol.trim()} startDate={startDate} endDate={endDate} initCapital={initCapital} mode={mode} />
+          </div>
         </div>
 
         {/* 右侧结果 */}

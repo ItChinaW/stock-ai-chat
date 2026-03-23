@@ -385,11 +385,10 @@ function runDCA(candles: Candle[], strategyCode: string, params: BacktestParams,
 
     if (i % interval === 0 && i < n - 1) {
       if (strategyCode === "dca") {
-        const buyAmount = Math.min(perAmount, cash);
+        const buyAmount = perAmount;
         if (buyAmount > 0 && price > 0) {
           const qty = buyAmount / price;
           shares += qty;
-          cash -= buyAmount;
           totalInvested += buyAmount;
           buyLogs.push({ date: candles[i]!.time, price, qty, amount: buyAmount });
         }
@@ -400,11 +399,10 @@ function runDCA(candles: Candle[], strategyCode: string, params: BacktestParams,
         const currentValue = shares * price;
         const diff = targetValue - currentValue;
         if (diff > 0) {
-          const buyAmount = Math.min(diff, cash);
+          const buyAmount = diff;
           if (buyAmount > 0) {
             const qty = buyAmount / price;
             shares += qty;
-            cash -= buyAmount;
             totalInvested += buyAmount;
             buyLogs.push({ date: candles[i]!.time, price, qty, amount: buyAmount });
           }
@@ -414,14 +412,13 @@ function runDCA(candles: Candle[], strategyCode: string, params: BacktestParams,
           const avgCost = totalInvested / shares;
           const pnl = (price - avgCost) * sellShares;
           shares -= sellShares;
-          cash += proceeds;
           totalInvested = Math.max(0, totalInvested - avgCost * sellShares);
           trades.push({ entryDate: candles[i]!.time, exitDate: candles[i]!.time, entryPrice: avgCost, exitPrice: price, pnl, pnlPct: (price - avgCost) / avgCost });
         }
       }
     }
 
-    equity.push(cash + shares * price);
+    equity.push(shares * price);
   }
 
   // 最后一根K线全部卖出，每笔买入对应一笔卖出
@@ -432,14 +429,14 @@ function runDCA(candles: Candle[], strategyCode: string, params: BacktestParams,
     trades.push({ entryDate: buy.date, exitDate: lastDate, entryPrice: buy.price, exitPrice: lastPrice, pnl, pnlPct: (lastPrice - buy.price) / buy.price });
   }
 
-  const finalValue = cash + shares * lastPrice;
-  const totalPnl = finalValue - initCapital;
-  const totalReturn = totalPnl / initCapital;
+  const finalValue = shares * lastPrice;
+  const totalPnl = finalValue - totalInvested;
+  const totalReturn = totalInvested > 0 ? totalPnl / totalInvested : 0;
   const days = Math.max(1, (new Date(candles[n-1]!.time).getTime() - new Date(candles[0]!.time).getTime()) / 86400000);
   const annualReturn = Math.pow(1 + totalReturn, 365 / days) - 1;
 
-  let peak = initCapital, maxDrawdown = 0;
-  for (const v of equity) { if (v > peak) peak = v; const dd = (peak - v) / peak; if (dd > maxDrawdown) maxDrawdown = dd; }
+  let peak = equity[0] ?? 0, maxDrawdown = 0;
+  for (const v of equity) { if (v > peak) peak = v; const dd = peak > 0 ? (peak - v) / peak : 0; if (dd > maxDrawdown) maxDrawdown = dd; }
 
   const dailyR = equity.slice(1).map((v, i) => (v - equity[i]!) / equity[i]!);
   const meanR = dailyR.reduce((a, b) => a + b, 0) / (dailyR.length || 1);
@@ -472,6 +469,143 @@ function runDCA(candles: Candle[], strategyCode: string, params: BacktestParams,
 
 // ── 主引擎 ────────────────────────────────────────────────
 
+// ── 海龟策略专用引擎 ──────────────────────────────────────
+function runTurtle(
+  candles: Candle[], params: BacktestParams,
+  initCapital: number, mode: "simple" | "compound",
+): BacktestResult {
+  const n = candles.length;
+  const closes = candles.map(c => c.close);
+  const ep = params.entryPeriod ?? 20;
+  const xp = params.exitPeriod ?? 10;
+  const atrPeriod = 20; // 海龟原版用20日ATR
+  const atrVals = atrArr(candles, atrPeriod);
+  const benchmarkStart = closes[0]!;
+
+  const trades: Trade[] = [];
+  const equity: number[] = [initCapital];
+  let capital = initCapital;
+
+  // 头寸状态
+  let units: { price: number; shares: number; date: string }[] = [];
+  let stopLoss = 0;
+
+  for (let i = Math.max(ep, xp, atrPeriod); i < n; i++) {
+    const price = closes[i]!;
+    const c = candles[i]!;
+    const atr = atrVals[i] ?? price * 0.02;
+
+    // ── 平仓检查 ──
+    if (units.length > 0) {
+      const exitLo = Math.min(...candles.slice(i - xp, i).map(c2 => c2.low));
+      const hitStop = c.low <= stopLoss;
+      const hitExit = price < exitLo;
+
+      if (hitStop || hitExit) {
+        const exitPrice = hitStop ? Math.min(stopLoss, price) : price;
+        // 每个 Unit 单独记录一笔 trade，图表上可以看到每次加仓的买入点
+        for (const u of units) {
+          const pnl = (exitPrice - u.price) * u.shares;
+          trades.push({
+            entryDate: u.date,
+            exitDate: c.time,
+            entryPrice: u.price,
+            exitPrice,
+            pnl,
+            pnlPct: exitPrice / u.price - 1,
+          });
+          capital += pnl;
+        }
+        units = [];
+      }
+    }
+
+    // ── 入场 / 加仓检查 ──
+    if (units.length < 4) {
+      const entryHi = Math.max(...candles.slice(i - ep, i).map(c2 => c2.high));
+      const base = mode === "simple" ? initCapital : capital;
+
+      // 每个 Unit 的股数：账户资金 * 1% / ATR（风险单位）
+      const unitShares = Math.max(1, Math.floor((base * 0.01) / atr));
+
+      if (units.length === 0 && price > entryHi) {
+        // 初始突破入场
+        units.push({ price, shares: unitShares, date: c.time });
+        stopLoss = price - 2 * atr;
+      } else if (units.length > 0) {
+        // 加仓：每涨 0.5N 加一个 Unit
+        const lastEntry = units[units.length - 1]!.price;
+        if (price >= lastEntry + 0.5 * atr) {
+          units.push({ price, shares: unitShares, date: c.time });
+          // 止损统一上移到最新入场价 - 2N
+          stopLoss = price - 2 * atr;
+        }
+      }
+    }
+
+    const totalShares = units.reduce((s, u) => s + u.shares, 0);
+    equity.push(capital + (totalShares > 0 ? (price - units.reduce((s, u) => s + u.price * u.shares, 0) / totalShares) * totalShares : 0));
+  }
+
+  // 填充前面没有计算的 equity
+  while (equity.length < n) equity.unshift(initCapital);
+
+  // 记录最终持仓状态（强制平仓前）
+  const finalInPosition = units.length > 0;
+  const finalEntryPrice = units.length > 0
+    ? units.reduce((s, u) => s + u.price * u.shares, 0) / units.reduce((s, u) => s + u.shares, 0)
+    : null;
+
+  // 强制平仓
+  if (units.length > 0) {
+    const last = candles[n - 1]!;
+    for (const u of units) {
+      const pnl = (last.close - u.price) * u.shares;
+      trades.push({ entryDate: u.date, exitDate: last.time, entryPrice: u.price, exitPrice: last.close, pnl, pnlPct: last.close / u.price - 1 });
+      capital += pnl;
+    }
+    equity[equity.length - 1] = capital;
+  }
+
+  const totalPnl = capital - initCapital;
+  const totalReturn = totalPnl / initCapital;
+  const days = Math.max(1, (new Date(candles[n-1]!.time).getTime() - new Date(candles[0]!.time).getTime()) / 86400000);
+  const annualReturn = Math.pow(1 + totalReturn, 365 / days) - 1;
+
+  let peak = initCapital, maxDrawdown = 0;
+  for (const v of equity) { if (v > peak) peak = v; const dd = (peak - v) / peak; if (dd > maxDrawdown) maxDrawdown = dd; }
+
+  const dailyR = equity.slice(1).map((v, i) => (v - equity[i]!) / equity[i]!);
+  const meanR = dailyR.reduce((a, b) => a + b, 0) / (dailyR.length || 1);
+  const stdR = Math.sqrt(dailyR.reduce((s, r) => s + (r - meanR) ** 2, 0) / (dailyR.length || 1));
+  const rfDaily = 0.02 / 252;
+  const sharpe = stdR > 0 ? ((meanR - rfDaily) * 252) / (stdR * Math.sqrt(252)) : 0;
+  const downR = dailyR.filter(r => r < rfDaily);
+  const downStd = downR.length > 1 ? Math.sqrt(downR.reduce((s, r) => s + (r - rfDaily) ** 2, 0) / downR.length) : 0;
+  const sortino = downStd > 0 ? ((meanR - rfDaily) * 252) / (downStd * Math.sqrt(252)) : 0;
+  const calmar = maxDrawdown > 0 ? annualReturn / maxDrawdown : 0;
+
+  const wins = trades.filter(t => t.pnl > 0), losses = trades.filter(t => t.pnl <= 0);
+  const winRate = trades.length > 0 ? wins.length / trades.length : 0;
+  const avgWin = wins.length > 0 ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length : 0;
+  const avgLoss = losses.length > 0 ? losses.reduce((s, t) => s + t.pnl, 0) / losses.length : 0;
+  const totalWin = wins.reduce((s, t) => s + t.pnl, 0);
+  const totalLoss = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
+  const profitFactor = totalLoss > 0 ? totalWin / totalLoss : totalWin > 0 ? 999 : 0;
+  const avgHoldDays = trades.length > 0
+    ? trades.reduce((s, t) => s + (new Date(t.exitDate).getTime() - new Date(t.entryDate).getTime()) / 86400000, 0) / trades.length
+    : 0;
+
+  const step = Math.max(1, Math.floor(n / 300));
+  const equityCurve = candles.filter((_, i) => i % step === 0).map((c, idx) => ({
+    date: c.time.slice(0, 10),
+    value: Math.round(equity[idx * step] ?? initCapital),
+    benchmark: Math.round(initCapital * (c.close / benchmarkStart)),
+  }));
+
+  return { totalReturn, totalPnl, annualReturn, maxDrawdown, sharpe, sortino, calmar, tradeCount: trades.length, winRate, avgHoldDays, avgWin, avgLoss, profitFactor, equityCurve, trades, inPosition: finalInPosition, entryPrice: finalEntryPrice };
+}
+
 export function runEngine(
   candles: Candle[], strategyCode: string, params: BacktestParams,
   initCapital: number, mode: "simple" | "compound",
@@ -479,6 +613,11 @@ export function runEngine(
   // ── 定投策略单独处理 ──────────────────────────────────
   if (strategyCode === "dca" || strategyCode === "va") {
     return runDCA(candles, strategyCode, params, initCapital);
+  }
+
+  // ── 海龟策略单独处理（头寸管理）──────────────────────
+  if (strategyCode === "turtle") {
+    return runTurtle(candles, params, initCapital, mode);
   }
 
   const n = candles.length;

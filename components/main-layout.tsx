@@ -333,6 +333,12 @@ export default function MainLayout() {
     staleTime: newsSource === "global" ? 10 * 60_000 : 60_000,
   });
 
+  const { data: aiConfig } = useQuery<{ aiEnabled: boolean }>({
+    queryKey: ["ai-config"],
+    queryFn: async () => { const r = await fetch("/api/ai/config"); return r.json(); },
+    staleTime: 60_000,
+  });
+
   useEffect(() => {
     if (newsSource === "global") void fetch("/api/market/news-cron");
   }, [newsSource]);
@@ -353,11 +359,13 @@ export default function MainLayout() {
       </div>
 
       <aside className="w-full md:w-64 shrink-0 flex flex-col gap-3">
+        {aiConfig?.aiEnabled && (
         <button type="button" onClick={() => setPortfolioAiOpen(true)}
           className="flex items-center justify-center gap-2 w-full rounded-xl bg-zinc-900 py-2.5 text-sm font-medium text-white hover:bg-zinc-700 transition">
           <Bot size={15} />
           AI 分析
         </button>
+        )}
 
         {/* 工具入口 */}
         <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
@@ -408,18 +416,20 @@ export default function MainLayout() {
               </a>
             ))}
           </div>
+          {aiConfig?.aiEnabled && (
           <button type="button" onClick={() => setNewsAiOpen(true)}
             className="mt-3 flex items-center justify-center gap-1.5 w-full rounded-lg border border-zinc-200 py-2 text-xs text-zinc-500 hover:bg-zinc-50 hover:text-zinc-800 transition">
             <Bot size={12} />
             AI 分析新闻
           </button>
+          )}
         </div>
       </aside>
 
-      {portfolioAiOpen && <PortfolioAiModal onClose={() => setPortfolioAiOpen(false)} />}
-      {newsAiOpen && <NewsAiModal onClose={() => setNewsAiOpen(false)} />}
+      {portfolioAiOpen && aiConfig?.aiEnabled && <PortfolioAiModal onClose={() => setPortfolioAiOpen(false)} />}
+      {newsAiOpen && aiConfig?.aiEnabled && <NewsAiModal onClose={() => setNewsAiOpen(false)} />}
 
-      {selected && (
+      {selected && aiConfig?.aiEnabled && (
         <AiChatModal
           key={selected.code}
           code={selected.code}
