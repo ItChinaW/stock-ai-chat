@@ -39,7 +39,7 @@ async function fetchSinaQuotes(symbols: string[]): Promise<QuoteItem[]> {
     const text = new TextDecoder("gbk").decode(buf);
     const lines = text.trim().split("\n");
 
-    return lines.map((line, i) => {
+    return lines.map((line, i): QuoteItem | null => {
       const symbol = symbols[i]!;
       const match = line.match(/="([^"]+)"/);
       if (!match) return null;
@@ -104,7 +104,7 @@ async function fetchEastMoneyQuotes(symbols: string[]): Promise<QuoteItem[]> {
 
     const diffMap = new Map(json.data.diff.map((d) => [d.f12, d]));
 
-    return symbols.map((symbol) => {
+    return symbols.map((symbol): QuoteItem | null => {
       const meta = EASTMONEY_SYMBOL_MAP[symbol]!;
       const key = meta.secid.split(".")[1]!;
       const d = diffMap.get(key);
