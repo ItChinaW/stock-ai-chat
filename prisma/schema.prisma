@@ -103,10 +103,10 @@ model Backtest {
   avgWin       Float?   @map("avg_win")
   avgLoss      Float?   @map("avg_loss")
   profitFactor Float?   @map("profit_factor")
-  equityCurve  String?  @map("equity_curve") // JSON 数组
-  trades       String?  @default("[]") // JSON 数组，交易记录
+  equityCurve  String?  @map("equity_curve") @db.LongText // JSON 数组
+  trades       String?  @map("trades") @db.LongText // JSON 数组，交易记录
   status       String   @default("pending") // "pending"|"running"|"done"|"error"
-  errorMsg     String?  @map("error_msg")
+  errorMsg     String?  @map("error_msg") @db.Text
   createdAt    DateTime @default(now()) @map("created_at")
   user         User     @relation(fields: [userId], references: [id])
 
@@ -152,7 +152,7 @@ model PaperTrade {
   entryPrice   Float?   @map("entry_price")
   entryDate    String?  @map("entry_date")
   tradeCount   Int      @default(0) @map("trade_count")
-  trades       String   @default("[]")         // JSON 交易记录
+  trades       String?  @db.LongText // JSON 交易记录
   status       String   @default("active")     // active | stopped
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")

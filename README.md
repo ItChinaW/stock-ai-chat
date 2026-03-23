@@ -4,7 +4,7 @@
 
 ![Next.js](https://img.shields.io/badge/Next.js-16-black)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-blue)
-![Prisma](https://img.shields.io/badge/Prisma-SQLite-green)
+![Prisma](https://img.shields.io/badge/Prisma-MySQL-blue)
 ![License](https://img.shields.io/badge/license-MIT-orange)
 
 ## 功能
@@ -21,9 +21,9 @@
 ## 技术栈
 
 - **框架**：Next.js 16 (App Router)
-- **数据库**：SQLite + Prisma ORM
+- **数据库**：MySQL + Prisma ORM
 - **前端**：React 19 + TailwindCSS v4 + ECharts
-- **AI**：OpenAI SDK（兼容 DeepSeek / 通义千问 / 智谱）
+- **AI**：OpenAI SDK（兼容 DeepSeek / 通义千问 / 智谱 / Gemini）
 - **行情数据**：新浪财经、东方财富（免费，无需 API Key）
 
 ## 快速开始
@@ -31,8 +31,8 @@
 ### 1. 克隆项目
 
 ```bash
-git clone https://github.com/your-username/vibe-portfolio.git
-cd vibe-portfolio
+git clone https://github.com/ItChinaW/stock-ai-chat.git
+cd stock-ai-chat
 npm install
 ```
 
@@ -42,10 +42,10 @@ npm install
 cp .env.example .env
 ```
 
-编辑 `.env`，至少填写 `DATABASE_URL`。AI 功能按需配置，不配置则自动隐藏。
+编辑 `.env`，填写 `DATABASE_URL` 和至少一个 AI Key。AI 功能按需配置，不配置则自动隐藏。
 
 ```env
-DATABASE_URL="file:./dev.db"
+DATABASE_URL="mysql://user:password@localhost:3306/vibe_portfolio"
 
 # AI 大模型（至少配置一个）
 DEEPSEEK_API_KEY="sk-..."       # 推荐，性价比高
@@ -71,11 +71,13 @@ npm run dev
 
 | 变量 | 必填 | 说明 |
 |------|------|------|
-| `DATABASE_URL` | ✅ | SQLite 文件路径，如 `file:./dev.db` |
+| `DATABASE_URL` | ✅ | MySQL 连接串，如 `mysql://user:password@localhost:3306/vibe_portfolio` |
 | `DEEPSEEK_API_KEY` | — | DeepSeek 对话模型，[获取](https://platform.deepseek.com) |
 | `OPENAI_API_KEY` | — | OpenAI GPT-4o，[获取](https://platform.openai.com) |
+| `GEMINI_API_KEY` | — | Google Gemini，[获取](https://aistudio.google.com) |
 | `DASHSCOPE_API_KEY` | — | 通义千问，[获取](https://dashscope.aliyun.com) |
 | `ZHIPU_API_KEY` | — | 智谱 GLM，[获取](https://open.bigmodel.cn)，glm-4v-flash 免费 |
+| `MINIMAX_API_KEY` | — | MiniMax，[获取](https://platform.minimaxi.com) |
 | `VISION_PROVIDER` | — | 持仓截图识别引擎：`zhipu`（默认）\| `qwen` \| `openai` |
 | `BIAN_API_KEY` | — | 币安 API Key，加密量化机器人使用 |
 | `BIAN_API_SECRET` | — | 币安 API Secret |
@@ -92,6 +94,8 @@ npm run dev
 | DeepSeek Chat | DeepSeek | `DEEPSEEK_API_KEY` |
 | 通义千问 Plus | 阿里云 | `DASHSCOPE_API_KEY` |
 | GLM-4 Flash | 智谱 | `ZHIPU_API_KEY` |
+| Gemini | Google | `GEMINI_API_KEY` |
+| MiniMax Text / ABAB | MiniMax | `MINIMAX_API_KEY` |
 | GPT-4o / GPT-4o mini | OpenAI | `OPENAI_API_KEY` |
 
 ### 持仓截图导入
@@ -115,50 +119,27 @@ npm run dev
 
 ## 部署
 
-### Docker（推荐，SQLite）
+### Docker（推荐）
 
 ```bash
 docker compose up -d
 ```
 
-访问 [http://localhost:3000](http://localhost:3000)，数据持久化在 `sqlite_data` volume。
+访问 [http://localhost:3000](http://localhost:3000)，MySQL 数据持久化在 `mysql_data` volume，应用启动时自动执行迁移。
 
-### Docker + MySQL
+### 自托管（VPS）
 
-```bash
-docker compose -f docker-compose.mysql.yml up -d
-```
-
-MySQL 容器会自动创建数据库，应用启动时自动执行迁移。
-
-### 切换数据库
-
-修改 `.env` 中的两个变量，然后重新执行迁移：
-
-```env
-# MySQL
-DATABASE_PROVIDER="mysql"
-DATABASE_URL="mysql://user:password@localhost:3306/vibe_portfolio"
-
-# PostgreSQL
-DATABASE_PROVIDER="postgresql"
-DATABASE_URL="postgresql://user:password@localhost:5432/vibe_portfolio"
-```
+确保已有 MySQL 实例，配置好 `.env` 后：
 
 ```bash
 npx prisma migrate deploy
+npm run build
+npm start
 ```
 
 ### Vercel
 
-将 `DATABASE_PROVIDER` 改为 `postgresql`，配合 Vercel Postgres 或 Supabase 使用。
-
-### 自托管（VPS）
-
-```bash
-npm run build
-npm start
-```
+配合 PlanetScale 或其他 MySQL 兼容服务，将 `DATABASE_URL` 填入 Vercel 环境变量即可。
 
 ## 免责声明
 

@@ -10,6 +10,10 @@ export async function GET() {
   if (process.env.DEEPSEEK_API_KEY) models.push({ id: "deepseek-chat", label: "DeepSeek" });
   if (process.env.DASHSCOPE_API_KEY) models.push({ id: "qwen-plus", label: "通义千问" });
   if (process.env.ZHIPU_API_KEY) models.push({ id: "glm-4-flash", label: "智谱 GLM" });
+  if (process.env.MINIMAX_API_KEY) {
+    models.push({ id: "minimax-text-01", label: "MiniMax Text" });
+    models.push({ id: "abab6.5s-chat", label: "MiniMax ABAB" });
+  }
   if (process.env.OPENAI_API_KEY) {
     models.push({ id: "gpt-4o-mini", label: "GPT-4o mini" });
     models.push({ id: "gpt-4o", label: "GPT-4o" });

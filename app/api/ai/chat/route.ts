@@ -8,6 +8,8 @@ const MODEL_MAP: Record<string, string> = {
   "deepseek-chat": "deepseek-chat",
   "qwen-plus": "qwen-plus",
   "glm-4-flash": "glm-4-flash",
+  "minimax-text-01": "minimax-text-01",
+  "abab6.5s-chat": "abab6.5s-chat",
 };
 
 export const maxDuration = 60;
@@ -33,6 +35,7 @@ export async function POST(request: NextRequest) {
   const isDeepSeek = modelKey.startsWith("deepseek");
   const isQwen = modelKey.startsWith("qwen");
   const isZhipu = modelKey.startsWith("glm");
+  const isMiniMax = modelKey.startsWith("minimax") || modelKey.startsWith("abab");
 
   const client = new OpenAI({
     apiKey: isDeepSeek
@@ -41,14 +44,18 @@ export async function POST(request: NextRequest) {
         ? (process.env.DASHSCOPE_API_KEY ?? "")
         : isZhipu
           ? (process.env.ZHIPU_API_KEY ?? "")
-          : (process.env.OPENAI_API_KEY ?? ""),
+          : isMiniMax
+            ? (process.env.MINIMAX_API_KEY ?? "")
+            : (process.env.OPENAI_API_KEY ?? ""),
     baseURL: isDeepSeek
       ? "https://api.deepseek.com"
       : isQwen
         ? "https://dashscope.aliyuncs.com/compatible-mode/v1"
         : isZhipu
           ? "https://open.bigmodel.cn/api/paas/v4"
-          : undefined,
+          : isMiniMax
+            ? "https://api.minimax.chat/v1"
+            : undefined,
   });
 
   let systemPrompt = body.systemOverride ?? INVESTMENT_SYSTEM_PROMPT;
