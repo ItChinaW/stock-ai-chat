@@ -718,6 +718,7 @@ export type LiveSignal = {
   currentPrice: number;
   unrealizedPnlPct: number | null;
   stopLoss: number | null;
+  buyPrice: { low: number; high: number } | number | null; // 买入触发价或区间
 };
 
 export function getLatestSignal(
@@ -746,6 +747,60 @@ export function getLatestSignal(
 
   const last = candles[n - 1]!;
   const latestSig = signals[n - 1]!;
+  const closes = candles.map(c => c.close);
+
+  // 计算买入触发价
+  let buyPrice: LiveSignal["buyPrice"] = null;
+  if (!inPosition) {
+    const p = params;
+    if (strategyCode === "ma_cross" || strategyCode === "ema_cross") {
+      const fn = strategyCode === "ema_cross" ? ema : sma;
+      const slow = fn(closes, p.slowPeriod ?? 60);
+      const sv = slow[n - 1];
+      if (sv != null) buyPrice = { low: sv * 0.998, high: sv * 1.005 };
+    } else if (strategyCode === "triple_ma") {
+      const m = sma(closes, p.p2 ?? 20);
+      const mv = m[n - 1];
+      if (mv != null) buyPrice = { low: mv * 0.998, high: mv * 1.005 };
+    } else if (strategyCode === "breakout" || strategyCode === "turtle") {
+      const period = strategyCode === "turtle" ? (p.entryPeriod ?? 20) : (p.breakoutPeriod ?? 20);
+      const hi = Math.max(...candles.slice(n - period - 1, n - 1).map(c => c.high));
+      buyPrice = hi;
+    } else if (strategyCode === "macd" || strategyCode === "macd_kdj") {
+      const { dif, dea } = calcMacd(closes, p.fast ?? 12, p.slow ?? 26, p.signal ?? 9);
+      const d = dif[n - 1], e = dea[n - 1];
+      if (d != null && e != null && d < e) {
+        // MACD 金叉需要 dif 上穿 dea，估算触发价为当前价附近 ±1%
+        buyPrice = { low: last.close * 0.99, high: last.close * 1.01 };
+      }
+    } else if (strategyCode === "boll" || strategyCode === "boll_rsi" || strategyCode === "vol_break") {
+      const { lower } = calcBoll(closes, p.bollPeriod ?? p.period ?? 20, p.mult ?? 2);
+      const lv = lower[n - 1];
+      if (lv != null) buyPrice = { low: lv * 0.995, high: lv * 1.005 };
+    } else if (strategyCode === "rsi") {
+      const os = p.rsiOversold ?? 30;
+      // RSI 从超卖区回升，买入价参考当前价
+      buyPrice = { low: last.close * 0.98, high: last.close * 1.01 };
+      void os;
+    } else if (strategyCode === "kdj") {
+      const { k, d } = calcKdj(candles, p.n ?? 9);
+      const kv = k[n - 1], dv = d[n - 1];
+      if (kv != null && dv != null && kv < dv) {
+        buyPrice = { low: last.close * 0.99, high: last.close * 1.01 };
+      }
+    } else if (strategyCode === "atr_break") {
+      const ma = sma(closes, p.maPeriod ?? 20);
+      const atr = atrArr(candles, p.atrPeriod ?? 14);
+      const mv = ma[n - 1], av = atr[n - 1];
+      if (mv != null && av != null) buyPrice = mv + av * (p.atrMult ?? 1.5);
+    } else if (strategyCode === "sar") {
+      const { sar } = calcSar(candles, (p.step ?? 2) / 100, (p.max ?? 20) / 100);
+      const sv = sar[n - 1];
+      if (sv != null && sv < last.close) buyPrice = sv;
+    } else if (strategyCode === "momentum" || strategyCode === "roc" || strategyCode === "trix" || strategyCode === "cci" || strategyCode === "bias" || strategyCode === "dmi") {
+      buyPrice = { low: last.close * 0.99, high: last.close * 1.02 };
+    }
+  }
 
   return {
     signal: latestSig === 1 ? "buy" : latestSig === -1 ? "sell" : "hold",
@@ -755,5 +810,6 @@ export function getLatestSignal(
     currentPrice: last.close,
     unrealizedPnlPct: inPosition ? (last.close - entryPrice) / entryPrice : null,
     stopLoss: inPosition ? stopLoss : null,
+    buyPrice,
   };
 }

@@ -99,6 +99,7 @@ export default function AiChatModal({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const userScrolledUpRef = useRef(false);
   const initializedRef = useRef<string | null>(null);
+  const klineSentRef = useRef<string | null>(null); // 记录已传过 K 线的 code+open 状态
   const abortRef = useRef<AbortController | null>(null);
 
   const { data: positions = [] } = useQuery({ queryKey: ["positions"], queryFn: fetchPositions });
@@ -155,6 +156,11 @@ export default function AiChatModal({
     }
   }, [historyLoaded, history, code]);
 
+  // 每次弹窗打开时重置 K 线已发送标记，确保新会话能带上最新数据
+  useEffect(() => {
+    if (open) klineSentRef.current = null;
+  }, [open, code]);
+
   useEffect(() => {
     if (!open) return;
     const el = scrollContainerRef.current;
@@ -205,13 +211,28 @@ export default function AiChatModal({
     abortRef.current = abort;
 
     // 构建 context：策略和价格每次都传（放 system prompt），只有大块回测数据只传第一次
-    const isFirstMsg = messages.filter(m => m.role === "user").length === 0;
+    const shouldSendKline = klineSentRef.current !== code;
     const ctx = localStorage.getItem(`ctx:${code}`) ?? "";
     const strategyDesc = selectedStrategy
       ? `${selectedStrategy.label}（${selectedStrategy.params.map(p => `${p.label}=${customParams[p.key] ?? p.default}`).join("，")}）`
       : undefined;
     // 历史消息最多保留最近 10 条
     const trimmedNext = next.slice(-10);
+
+    // 本次会话首条消息时拉取近 30 根日线 K 线数据
+    let klineContext = "";
+    if (shouldSendKline) {
+      try {
+        const kRes = await fetch(`/api/market/kline?symbol=${encodeURIComponent(code)}&period=day`);
+        const kData = await kRes.json() as { time: string; open: number; high: number; low: number; close: number; volume: number }[];
+        const recent = kData.slice(-30);
+        if (recent.length > 0) {
+          const rows = recent.map(k => `${k.time.slice(0, 10)} 开${k.open} 高${k.high} 低${k.low} 收${k.close} 量${Math.round(k.volume / 100)}手`).join("\n");
+          klineContext = `【近${recent.length}日K线数据】\n${rows}`;
+          klineSentRef.current = code;
+        }
+      } catch { /* 拉取失败不影响对话 */ }
+    }
 
     try {
       const res = await fetch("/api/ai/chat", {
@@ -228,8 +249,10 @@ export default function AiChatModal({
             amount: position?.amount,
             strategy: selectedStrategy?.label,
             strategyDescription: strategyDesc,
-            // 用户投资背景和回测数据只在第一条消息传
-            backtestContext: isFirstMsg && ctx ? `【用户投资背景】\n${ctx}` : undefined,
+            // 用户投资背景和回测数据只在本次会话首条消息传
+            backtestContext: (ctx || klineContext)
+              ? [klineContext, ctx ? `【用户投资背景】\n${ctx}` : ""].filter(Boolean).join("\n\n")
+              : undefined,
           },
         }),
       });

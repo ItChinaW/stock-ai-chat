@@ -289,113 +289,10 @@ type LiveSignal = {
   currentPrice: number;
   unrealizedPnlPct: number | null;
   stopLoss: number | null;
+  buyPrice: { low: number; high: number } | number | null;
 };
 type RecentTrade = { entryDate: string; exitDate: string; entryPrice: number; exitPrice: number; pnl: number; pnlPct: number };
 
-function SignalPanel({ record }: { record: BacktestRecord }) {
-  const params = JSON.parse(record.params) as Record<string, number>;
-  const { data, isLoading } = useQuery({
-    queryKey: ["backtest-signal", record.symbol, record.strategyCode, record.params],
-    queryFn: async () => {
-      const qs = new URLSearchParams({
-        symbol: record.symbol,
-        strategyCode: record.strategyCode,
-        params: record.params,
-        initCapital: String(record.initCapital),
-        mode: record.mode,
-      });
-      const res = await fetch(`/api/backtest/signal?${qs}`);
-      return res.json() as Promise<{ liveSignal: LiveSignal; recentTrades: RecentTrade[] }>;
-    },
-    staleTime: 5 * 60_000,
-    enabled: record.status === "done",
-  });
-
-  const sig = data?.liveSignal;
-  const trades = (data?.recentTrades ?? []).filter(t => t.entryDate && t.exitDate && t.entryPrice != null && t.exitPrice != null);
-
-  const sigConfig = {
-    buy:  { label: "买入信号", bg: "bg-rose-50", border: "border-rose-200", text: "text-rose-600", dot: "bg-rose-500" },
-    sell: { label: "卖出信号", bg: "bg-emerald-50", border: "border-emerald-200", text: "text-emerald-600", dot: "bg-emerald-500" },
-    hold: { label: "持有观望", bg: "bg-zinc-50", border: "border-zinc-200", text: "text-zinc-600", dot: "bg-zinc-400" },
-  };
-  const cfg = sigConfig[sig?.signal ?? "hold"];
-
-  return (
-    <div className="rounded-xl border border-zinc-100 bg-white p-4">
-      <p className="text-sm font-semibold text-zinc-700 mb-4">实战信号 · 今日</p>
-
-      {isLoading && <div className="text-sm text-zinc-400 py-4 text-center">计算中...</div>}
-
-      {sig && (
-        <div className="flex flex-col gap-4">
-          {/* 当前信号 */}
-          <div className={`flex items-center gap-3 rounded-xl border p-4 ${cfg.bg} ${cfg.border}`}>
-            <span className={`h-3 w-3 rounded-full ${cfg.dot} shrink-0`} />
-            <div className="flex-1">
-              <p className={`text-base font-bold ${cfg.text}`}>{cfg.label}</p>
-              <p className="text-xs text-zinc-500 mt-0.5">
-                当前价 {sig.currentPrice.toFixed(3)}
-                {sig.inPosition && sig.entryPrice && (
-                  <> · 持仓成本 {sig.entryPrice.toFixed(3)}
-                  {sig.unrealizedPnlPct != null && (
-                    <span className={sig.unrealizedPnlPct >= 0 ? " text-rose-500" : " text-emerald-600"}>
-                      {" "}({sig.unrealizedPnlPct >= 0 ? "+" : ""}{(sig.unrealizedPnlPct * 100).toFixed(2)}%)
-                    </span>
-                  )}</>
-                )}
-              </p>
-            </div>
-            {sig.inPosition && (
-              <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700">持仓中</span>
-            )}
-          </div>
-
-          {/* 止损位 */}
-          {sig.inPosition && sig.stopLoss && (
-            <div className="flex items-center justify-between rounded-lg bg-zinc-50 px-4 py-2.5 text-sm">
-              <span className="text-zinc-500">策略止损位</span>
-              <span className="font-semibold text-rose-500">{sig.stopLoss.toFixed(3)}</span>
-            </div>
-          )}
-
-          {/* 如何使用说明 */}
-          <div className="rounded-xl bg-blue-50 border border-blue-100 p-3 text-xs text-blue-700 leading-relaxed">
-            <p className="font-medium mb-1">如何使用这个信号？</p>
-            {sig.signal === "buy" && <p>策略今日触发买入条件。结合回测胜率 {record.winRate != null ? `${(record.winRate * 100).toFixed(0)}%` : "-"} 和平均持有 {record.avgHoldDays?.toFixed(0) ?? "-"} 天，可考虑按策略建仓，止损设在 {sig.stopLoss?.toFixed(3) ?? "ATR×2"} 附近。</p>}
-            {sig.signal === "sell" && <p>策略今日触发卖出条件。若你当前持有该票，可参考此信号考虑减仓或止盈。回测显示该策略平均盈利 {record.avgWin != null ? `${record.avgWin.toFixed(0)}元` : "-"}。</p>}
-            {sig.signal === "hold" && sig.inPosition && <p>策略当前无新信号，持仓继续持有。注意止损位 {sig.stopLoss?.toFixed(3) ?? "-"}，跌破时策略会触发卖出。</p>}
-            {sig.signal === "hold" && !sig.inPosition && <p>策略当前无买入信号，建议观望等待。该策略历史交易 {record.tradeCount ?? 0} 次，胜率 {record.winRate != null ? `${(record.winRate * 100).toFixed(0)}%` : "-"}，耐心等待信号出现。</p>}
-          </div>
-
-          {/* 最近交易记录 */}
-          {trades.length > 0 && (
-            <div>
-              <p className="text-xs font-medium text-zinc-400 mb-2">最近交易记录</p>
-              <div className="flex flex-col gap-1">
-                {trades.map((t, i) => (
-                  <div key={i} className="flex items-center justify-between rounded-lg bg-zinc-50 px-3 py-2 text-xs">
-                    <div className="text-zinc-500">
-                      <span>{t.entryDate.slice(0, 10)}</span>
-                      <span className="mx-1 text-zinc-300">→</span>
-                      <span>{t.exitDate.slice(0, 10)}</span>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <span className="text-zinc-400">{t.entryPrice.toFixed(3)} → {t.exitPrice.toFixed(3)}</span>
-                      <span className={`font-semibold ${t.pnl >= 0 ? "text-rose-500" : "text-emerald-600"}`}>
-                        {t.pnl >= 0 ? "+" : ""}{t.pnl.toFixed(0)}元
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
 
 function ResultPanel({ record }: { record: BacktestRecord }) {
   const curve = record.equityCurve
@@ -1003,7 +900,6 @@ ${recentTrades.map((t, i) => `${i + 1}. 买入 ${t.entryDate.slice(0, 10)} @ ${t
               ) : (
                 <>
                   <ResultPanel record={selected} />
-                  <SignalPanel record={selected} />
                 </>
               )}
             </div>

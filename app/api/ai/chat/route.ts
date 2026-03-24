@@ -61,25 +61,20 @@ export async function POST(request: NextRequest) {
   let systemPrompt = body.systemOverride ?? INVESTMENT_SYSTEM_PROMPT;
   if (!body.systemOverride && body.context) {
     const ctx = body.context;
-
-    // 用户投资背景优先放在最前面，让 AI 重点结合
+    const pnl =
+      ctx.currentPrice && ctx.costPrice && ctx.amount
+        ? ((ctx.currentPrice - ctx.costPrice) * ctx.amount).toFixed(2)
+        : "未知";
+    const parts = [
+      `当前分析标的：${ctx.code}`,
+      ctx.currentPrice ? `当前价格：${ctx.currentPrice}` : null,
+      ctx.costPrice ? `持仓成本：${ctx.costPrice}，数量：${ctx.amount ?? 0}，浮动盈亏：¥${pnl}` : null,
+      ctx.strategy ? `选用策略：${ctx.strategy}` : null,
+      ctx.strategyDescription ? `策略参数：${ctx.strategyDescription}` : null,
+    ].filter(Boolean);
+    systemPrompt += `\n\n---\n${parts.join("\n")}`;
     if (ctx.backtestContext) {
-      // backtestContext 可能包含回测数据，也可能只是用户背景
-      systemPrompt += `\n\n---\n${ctx.backtestContext}`;
-    } else {
-      // 普通持仓分析模式
-      const pnl =
-        ctx.currentPrice && ctx.costPrice && ctx.amount
-          ? ((ctx.currentPrice - ctx.costPrice) * ctx.amount).toFixed(2)
-          : "未知";
-      const parts = [
-        `当前分析标的：${ctx.code}`,
-        `当前价格：${ctx.currentPrice ?? "未知"}`,
-        ctx.costPrice ? `持仓成本：${ctx.costPrice}，数量：${ctx.amount ?? 0}，浮动盈亏：¥${pnl}` : null,
-        ctx.strategy ? `选用策略：${ctx.strategy}` : null,
-        ctx.strategyDescription ? `策略内容：${ctx.strategyDescription}` : null,
-      ].filter(Boolean);
-      systemPrompt += `\n\n---\n${parts.join("\n")}`;
+      systemPrompt += `\n\n${ctx.backtestContext}`;
     }
   }
 
