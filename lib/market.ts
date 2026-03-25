@@ -14,6 +14,7 @@ const DEFAULT_TIMEOUT_MS = 8000;
 export function toSinaSymbol(symbol: string): string {
   const s = symbol.toLowerCase();
   if (s.startsWith("sh") || s.startsWith("sz")) return s;
+  if (s.startsWith("gb_") || s.startsWith("hf_") || s.startsWith("fx_")) return s;
   if (symbol.startsWith(".")) return `gb_${symbol.slice(1).toLowerCase()}`;
   if (!/^\d{6}$/.test(symbol)) return `gb_${symbol.toLowerCase()}`;
   const isSH = /^(6|5|11)/.test(symbol);
@@ -81,11 +82,53 @@ async function fetchSinaQuotes(symbols: string[]): Promise<QuoteItem[]> {
   }
 }
 
-// 东方财富 secid 映射，key 为原始 symbol
-const EASTMONEY_SYMBOL_MAP: Record<string, { secid: string; currency: string }> = {
-  "^N225": { secid: "100.N225", currency: "JPY" },
-  "^KS11": { secid: "100.KS11", currency: "KRW" },
-};
+// 东方财富 secid 映射（目前仅保留确认可用的品种）
+const EASTMONEY_SYMBOL_MAP: Record<string, { secid: string; currency: string }> = {};
+
+// 新浪期货/外汇行情（hf_ / fx_ 前缀），格式与股票不同
+const isHfSymbol = (s: string) => s.startsWith("hf_");
+const isFxSymbol = (s: string) => s.startsWith("fx_");
+
+async function fetchSinaHfQuotes(symbols: string[]): Promise<QuoteItem[]> {
+  if (symbols.length === 0) return [];
+  const joined = symbols.join(",");
+  const url = `https://hq.sinajs.cn/list=${joined}`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      cache: "no-store",
+      signal: controller.signal,
+      headers: { Referer: "https://finance.sina.com.cn" },
+    });
+    const buf = await res.arrayBuffer();
+    const text = new TextDecoder("gbk").decode(buf);
+    const lines = text.trim().split("\n");
+    return lines.map((line, i): QuoteItem | null => {
+      const symbol = symbols[i]!;
+      const match = line.match(/="([^"]+)"/);
+      if (!match) return null;
+      const parts = match[1]!.split(",");
+      if (isFxSymbol(symbol)) {
+        // fx 格式: 时间,买价,卖价,现价,...,名称,...
+        const price = parseFloat(parts[3] ?? "0");
+        const prevClose = parseFloat(parts[4] ?? "0") || price;
+        const name = parts[9] ?? symbol;
+        if (!price) return null;
+        return { symbol, name, price, change: price - prevClose, changePercent: prevClose > 0 ? (price - prevClose) / prevClose * 100 : 0, previousClose: prevClose, currency: "CNY" };
+      } else {
+        // hf 格式: 价格,,买,卖,最高,最低,时间,昨收,均价,...,名称
+        const price = parseFloat(parts[0] ?? "0");
+        const prevClose = parseFloat(parts[7] ?? "0") || price;
+        const name = parts[13] ?? symbol;
+        if (!price) return null;
+        return { symbol, name, price, change: price - prevClose, changePercent: prevClose > 0 ? (price - prevClose) / prevClose * 100 : 0, previousClose: prevClose, currency: "USD" };
+      }
+    }).filter((v): v is QuoteItem => v !== null);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 async function fetchEastMoneyQuotes(symbols: string[]): Promise<QuoteItem[]> {
   if (symbols.length === 0) return [];
@@ -126,14 +169,15 @@ async function fetchEastMoneyQuotes(symbols: string[]): Promise<QuoteItem[]> {
 
 export async function fetchYahooQuotes(symbols: string[]): Promise<QuoteItem[]> {
   const emSymbols = symbols.filter((s) => s in EASTMONEY_SYMBOL_MAP);
-  const sinaSymbols = symbols.filter((s) => !(s in EASTMONEY_SYMBOL_MAP));
+  const hfFxSymbols = symbols.filter((s) => isHfSymbol(s) || isFxSymbol(s));
+  const sinaSymbols = symbols.filter((s) => !(s in EASTMONEY_SYMBOL_MAP) && !isHfSymbol(s) && !isFxSymbol(s));
 
-  const [emResults, sinaResults] = await Promise.all([
+  const [emResults, hfResults, sinaResults] = await Promise.all([
     fetchEastMoneyQuotes(emSymbols),
+    fetchSinaHfQuotes(hfFxSymbols),
     fetchSinaQuotes(sinaSymbols),
   ]);
 
-  // 按原始顺序返回
-  const resultMap = new Map([...emResults, ...sinaResults].map((r) => [r.symbol, r]));
+  const resultMap = new Map([...emResults, ...hfResults, ...sinaResults].map((r) => [r.symbol, r]));
   return symbols.map((s) => resultMap.get(s)).filter((v): v is QuoteItem => v !== null);
 }

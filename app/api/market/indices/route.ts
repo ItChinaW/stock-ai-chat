@@ -2,11 +2,17 @@ import { fetchYahooQuotes } from "@/lib/market";
 import { NextResponse } from "next/server";
 
 const TRACKED_INDICES = [
-  { key: "nasdaq", label: "纳斯达克", symbol: ".IXIC" },
-  { key: "sse",    label: "上证指数", symbol: "sh000001" },
-  { key: "szse",   label: "深证成指", symbol: "sz399001" },
-  { key: "nikkei", label: "日经225",  symbol: "^N225" },
-  { key: "kospi",  label: "韩国综合", symbol: "^KS11" },
+  { key: "sse",     label: "上证指数",    symbol: "sh000001" },
+  { key: "szse",    label: "深证成指",    symbol: "sz399001" },
+  { key: "nasdaq",  label: "纳斯达克",    symbol: "gb_ixic" },
+  { key: "sp500",   label: "标普500",     symbol: "gb_inx" },
+  { key: "dji",     label: "道琼斯",      symbol: "gb_dji" },
+  { key: "hsi",     label: "恒生指数",    symbol: "hf_HSI" },
+  { key: "gold",    label: "纽约黄金",    symbol: "hf_GC" },
+  { key: "oil",     label: "纽约原油",    symbol: "hf_CL" },
+  { key: "gas",     label: "美国天然气",  symbol: "hf_NG" },
+  { key: "silver",  label: "纽约白银",    symbol: "hf_SI" },
+  { key: "usdcny",  label: "美元/人民币", symbol: "fx_susdcny" },
 ];
 
 export async function GET() {
@@ -30,10 +36,12 @@ export async function GET() {
       indices,
     });
   } catch (error) {
+    console.error("[indices] error:", error);
     return NextResponse.json(
       {
         message: "Failed to fetch market indices",
         error: error instanceof Error ? error.message : "Unknown error",
+        stack: error instanceof Error ? error.stack : undefined,
       },
       { status: 500 },
     );

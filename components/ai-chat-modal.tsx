@@ -219,17 +219,28 @@ export default function AiChatModal({
     // 历史消息最多保留最近 10 条
     const trimmedNext = next.slice(-10);
 
-    // 本次会话首条消息时拉取近 30 根日线 K 线数据
+    // 本次会话首条消息时拉取近 30 根日线 K 线数据 + 宏观行情
     let klineContext = "";
     if (shouldSendKline) {
       try {
-        const kRes = await fetch(`/api/market/kline?symbol=${encodeURIComponent(code)}&period=day`);
+        const [kRes, idxRes] = await Promise.all([
+          fetch(`/api/market/kline?symbol=${encodeURIComponent(code)}&period=day`),
+          fetch("/api/market/indices"),
+        ]);
         const kData = await kRes.json() as { time: string; open: number; high: number; low: number; close: number; volume: number }[];
         const recent = kData.slice(-30);
         if (recent.length > 0) {
           const rows = recent.map(k => `${k.time.slice(0, 10)} 开${k.open} 高${k.high} 低${k.low} 收${k.close} 量${Math.round(k.volume / 100)}手`).join("\n");
           klineContext = `【近${recent.length}日K线数据】\n${rows}`;
           klineSentRef.current = code;
+        }
+        const idxData = await idxRes.json() as { indices: { label: string; price: number; changePercent: number }[] };
+        if (idxData.indices?.length) {
+          const macroRows = idxData.indices
+            .filter(idx => idx.price > 0)
+            .map(idx => `${idx.label} ${idx.price} (${idx.changePercent >= 0 ? "+" : ""}${idx.changePercent.toFixed(2)}%)`)
+            .join("  ");
+          klineContext += `\n\n【当前宏观行情】\n${macroRows}`;
         }
       } catch { /* 拉取失败不影响对话 */ }
     }
