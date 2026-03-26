@@ -62,6 +62,8 @@ async function fetchSinaQuotes(symbols: string[]): Promise<QuoteItem[]> {
         name = parts[0] ?? "";
         price = parseFloat(parts[3] ?? "0");
         prevClose = parseFloat(parts[2] ?? "0");
+        // 开盘前当前价为0，用昨收价代替
+        if (price === 0 && prevClose > 0) price = prevClose;
         change = price - prevClose;
         changePercent = prevClose > 0 ? (change / prevClose) * 100 : 0;
       }
@@ -76,7 +78,7 @@ async function fetchSinaQuotes(symbols: string[]): Promise<QuoteItem[]> {
         previousClose: prevClose,
         currency: isUS ? "USD" : "CNY",
       } satisfies QuoteItem;
-    }).filter((v): v is QuoteItem => v !== null);
+    }).filter((v): v is QuoteItem => v != null);
   } finally {
     clearTimeout(timeout);
   }
@@ -124,7 +126,7 @@ async function fetchSinaHfQuotes(symbols: string[]): Promise<QuoteItem[]> {
         if (!price) return null;
         return { symbol, name, price, change: price - prevClose, changePercent: prevClose > 0 ? (price - prevClose) / prevClose * 100 : 0, previousClose: prevClose, currency: "USD" };
       }
-    }).filter((v): v is QuoteItem => v !== null);
+    }).filter((v): v is QuoteItem => v != null);
   } finally {
     clearTimeout(timeout);
   }
@@ -161,7 +163,7 @@ async function fetchEastMoneyQuotes(symbols: string[]): Promise<QuoteItem[]> {
         previousClose: d.f2 - d.f4,
         currency: meta.currency,
       } satisfies QuoteItem;
-    }).filter((v): v is QuoteItem => v !== null);
+    }).filter((v): v is QuoteItem => v != null);
   } finally {
     clearTimeout(timeout);
   }
@@ -179,5 +181,5 @@ export async function fetchYahooQuotes(symbols: string[]): Promise<QuoteItem[]> 
   ]);
 
   const resultMap = new Map([...emResults, ...hfResults, ...sinaResults].map((r) => [r.symbol, r]));
-  return symbols.map((s) => resultMap.get(s)).filter((v): v is QuoteItem => v !== null);
+  return symbols.map((s) => resultMap.get(s)).filter((v): v is QuoteItem => v != null);
 }
