@@ -62,6 +62,48 @@ export async function getKlines(symbol: string, interval: string, limit = 200): 
   }));
 }
 
+// 按时间范围分批拉取 K 线（自动处理 1000 根/次的限制）
+export async function getKlinesByRange(symbol: string, interval: string, startDate: string, endDate: string): Promise<Kline[]> {
+  const intervalMs: Record<string, number> = {
+    "1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000,
+    "1h": 3_600_000, "2h": 7_200_000, "4h": 14_400_000, "6h": 21_600_000, "8h": 28_800_000, "12h": 43_200_000,
+    "1d": 86_400_000, "3d": 259_200_000, "1w": 604_800_000,
+  };
+  const ms = intervalMs[interval] ?? 86_400_000;
+  const startMs = new Date(startDate).getTime();
+  const endMs = new Date(endDate).getTime() + 86_400_000; // 包含结束当天
+  const totalBars = Math.ceil((endMs - startMs) / ms);
+
+  // 数据量在 1000 根以内直接拉
+  if (totalBars <= 1000) {
+    const data = await publicGet("/api/v3/klines", { symbol, interval, startTime: startMs, endTime: endMs, limit: 1000 }) as unknown[][];
+    return data.map(k => ({
+      time: new Date(k[0] as number).toISOString().slice(0, 10),
+      open: parseFloat(k[1] as string), high: parseFloat(k[2] as string),
+      low: parseFloat(k[3] as string), close: parseFloat(k[4] as string),
+      volume: parseFloat(k[5] as string),
+    }));
+  }
+
+  // 分批拉取，每批 1000 根
+  const all: Kline[] = [];
+  let cursor = startMs;
+  while (cursor < endMs) {
+    const data = await publicGet("/api/v3/klines", { symbol, interval, startTime: cursor, endTime: endMs, limit: 1000 }) as unknown[][];
+    if (!data.length) break;
+    const batch = data.map(k => ({
+      time: new Date(k[0] as number).toISOString().slice(0, 10),
+      open: parseFloat(k[1] as string), high: parseFloat(k[2] as string),
+      low: parseFloat(k[3] as string), close: parseFloat(k[4] as string),
+      volume: parseFloat(k[5] as string),
+    }));
+    all.push(...batch);
+    cursor = (data[data.length - 1] as unknown[])[0] as number + ms;
+    if (data.length < 1000) break;
+  }
+  return all;
+}
+
 export async function getTicker(symbol: string): Promise<{ price: number; change: number; changePct: number }> {
   const data = await publicGet("/api/v3/ticker/24hr", { symbol }) as { lastPrice: string; priceChange: string; priceChangePercent: string };
   return {

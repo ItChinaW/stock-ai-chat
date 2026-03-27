@@ -171,6 +171,7 @@ model CryptoBot {
   interval     String        @default("1d") // K线周期
   quoteQty     Float         @map("quote_qty") // 每次买入 USDT 金额
   status       String        @default("stopped") // running | stopped
+  aiMode       String?       @map("ai_mode") // short | medium | long | null(手动)
   inPosition   Boolean       @default(false) @map("in_position")
   entryPrice   Float?        @map("entry_price")
   entryDate    String?       @map("entry_date")

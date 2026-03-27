@@ -1,6 +1,10 @@
 "use client";
 
 import { STRATEGY_DEFS } from "@/lib/backtest-engine";
+import { CRYPTO_STRATEGY_DEFS } from "@/lib/crypto-strategies";
+
+// 合并策略列表：币圈策略优先
+const ALL_CRYPTO_STRATEGIES = [...CRYPTO_STRATEGY_DEFS, ...STRATEGY_DEFS];
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import * as echarts from "echarts";
 import { BarChart2, Bot, FileText, Home, Play, RefreshCw, Send, Square, Trash2, TrendingDown, TrendingUp, X } from "lucide-react";
@@ -25,7 +29,7 @@ const MODELS = [
 
 type Ticker = { price: number; change: number; changePct: number };
 type Trade = { id: number; side: string; price: number; qty: number; quoteQty: number; pnl: number | null; pnlPct: number | null; createdAt: string };
-type Bot = { id: number; symbol: string; strategyCode: string; params: string; interval: string; quoteQty: number; status: string; inPosition: boolean; entryPrice: number | null; entryDate: string | null; lastChecked: string | null; createdAt: string; trades: Trade[] };
+type Bot = { id: number; symbol: string; strategyCode: string; params: string; interval: string; quoteQty: number; status: string; aiMode: string | null; inPosition: boolean; entryPrice: number | null; entryDate: string | null; lastChecked: string | null; createdAt: string; trades: Trade[] };
 type Balance = { asset: string; free: number; locked: number };
 type BacktestRecord = { id: number; name: string; symbol: string; strategyCode: string; params: string; startDate: string; endDate: string; initCapital: number; mode: string; totalReturn: number | null; totalPnl: number | null; annualReturn: number | null; maxDrawdown: number | null; tradeCount: number | null; winRate: number | null; sharpe: number | null; sortino: number | null; calmar: number | null; avgHoldDays: number | null; avgWin: number | null; avgLoss: number | null; profitFactor: number | null; equityCurve: string | null; trades: string | null; status: string; errorMsg: string | null; createdAt: string };
 
@@ -81,6 +85,125 @@ function EquityChart({ data, trades }: { data: { date: string; value: number; be
     return () => { ro.disconnect(); chart.dispose(); };
   }, [data, trades]);
   return <div ref={ref} className="w-full h-64" />;
+}
+
+// ── 策略对比图表 ───────────────────────────────────────────
+type CompareResult = { code: string; label: string; totalReturn: number; annualReturn: number; maxDrawdown: number; sharpe: number; winRate: number; tradeCount: number };
+
+function CompareChart({ results, metric }: { results: CompareResult[]; metric: "annualReturn" | "maxDrawdown" | "sharpe" | "winRate" }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!ref.current || results.length === 0) return;
+    const chart = echarts.init(ref.current);
+    const sorted = [...results].sort((a, b) => metric === "maxDrawdown" ? a[metric] - b[metric] : b[metric] - a[metric]);
+    const labels = sorted.map(r => r.label);
+    const values = sorted.map(r => {
+      const v = r[metric];
+      return metric === "sharpe" ? +v.toFixed(3) : +(v * 100).toFixed(2);
+    });
+    const isPercent = metric !== "sharpe";
+    const colors = values.map(v => metric === "maxDrawdown" ? "#10b981" : v >= 0 ? "#ef4444" : "#10b981");
+    chart.setOption({
+      animation: false,
+      tooltip: { trigger: "axis", formatter: (p: unknown) => { const ps = p as { name: string }[]; return `${ps[0]?.name}<br/>${values[labels.indexOf(ps[0]?.name ?? "")]}${isPercent ? "%" : ""}`; } },
+      grid: { left: 90, right: 16, top: 12, bottom: 8 },
+      xAxis: { type: "value", axisLabel: { fontSize: 10, formatter: (v: number) => `${v}${isPercent ? "%" : ""}` } },
+      yAxis: { type: "category", data: labels, axisLabel: { fontSize: 10, width: 80, overflow: "truncate" } },
+      series: [{ type: "bar", data: values.map((v, i) => ({ value: v, itemStyle: { color: colors[i] } })), barMaxWidth: 20 }],
+    });
+    const ro = new ResizeObserver(() => chart.resize());
+    ro.observe(ref.current);
+    return () => { ro.disconnect(); chart.dispose(); };
+  }, [results, metric]);
+  return <div ref={ref} className="w-full" style={{ height: Math.max(240, results.length * 22) }} />;
+}
+
+function CryptoComparePanel({ symbol, interval, startDate, endDate, initCapital, mode }: {
+  symbol: string; interval: string; startDate: string; endDate: string; initCapital: string; mode: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [metric, setMetric] = useState<"annualReturn" | "maxDrawdown" | "sharpe" | "winRate">("annualReturn");
+  const { data, isFetching, refetch } = useQuery<{ results: CompareResult[] }>({
+    queryKey: ["crypto-compare", symbol, interval, startDate, endDate, initCapital, mode],
+    queryFn: async () => {
+      const qs = new URLSearchParams({ symbol, interval, startDate, endDate, initCapital, mode });
+      const r = await fetch(`/api/crypto/backtest/compare?${qs}`);
+      return r.json();
+    },
+    enabled: false,
+    staleTime: 5 * 60_000,
+  });
+
+  function handleOpen() { setOpen(true); if (!data) void refetch(); }
+
+  const METRICS = [
+    { key: "annualReturn" as const, label: "年化收益" },
+    { key: "maxDrawdown" as const, label: "最大回撤" },
+    { key: "sharpe" as const, label: "夏普比率" },
+    { key: "winRate" as const, label: "胜率" },
+  ];
+
+  return (
+    <>
+      <button type="button" onClick={handleOpen} disabled={!symbol}
+        className="flex items-center gap-1.5 rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-600 hover:bg-zinc-50 disabled:opacity-40">
+        <BarChart2 size={13} />策略对比
+      </button>
+      {open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="flex w-full max-w-3xl flex-col gap-4 rounded-2xl bg-white p-5 shadow-xl max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="font-semibold text-zinc-900">策略横向对比</p>
+                <p className="text-xs text-zinc-400">{symbol} · {interval} · {startDate} ~ {endDate} · 默认参数</p>
+              </div>
+              <button type="button" onClick={() => setOpen(false)} className="rounded-lg p-1.5 hover:bg-zinc-100"><X size={16} /></button>
+            </div>
+            <div className="flex gap-2 flex-wrap">
+              {METRICS.map(m => (
+                <button key={m.key} type="button" onClick={() => setMetric(m.key)}
+                  className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${metric === m.key ? "bg-zinc-900 text-white" : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"}`}>
+                  {m.label}
+                </button>
+              ))}
+            </div>
+            {isFetching && <div className="flex h-40 items-center justify-center text-sm text-zinc-400">计算中，请稍候...</div>}
+            {data?.results && !isFetching && (
+              <>
+                <CompareChart results={data.results} metric={metric} />
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b border-zinc-100 text-zinc-400">
+                        <th className="py-2 text-left font-medium">策略</th>
+                        <th className="py-2 text-right font-medium">年化收益</th>
+                        <th className="py-2 text-right font-medium">最大回撤</th>
+                        <th className="py-2 text-right font-medium">夏普</th>
+                        <th className="py-2 text-right font-medium">胜率</th>
+                        <th className="py-2 text-right font-medium">交易次数</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...data.results].sort((a, b) => b.annualReturn - a.annualReturn).map((r, i) => (
+                        <tr key={r.code} className={`border-b border-zinc-50 ${i === 0 ? "bg-emerald-50" : ""}`}>
+                          <td className="py-1.5 font-medium text-zinc-700">{r.label}</td>
+                          <td className={`py-1.5 text-right font-semibold ${r.annualReturn >= 0 ? "text-emerald-600" : "text-rose-500"}`}>{r.annualReturn >= 0 ? "+" : ""}{(r.annualReturn * 100).toFixed(2)}%</td>
+                          <td className="py-1.5 text-right text-rose-500">-{(r.maxDrawdown * 100).toFixed(2)}%</td>
+                          <td className="py-1.5 text-right text-zinc-700">{r.sharpe.toFixed(2)}</td>
+                          <td className="py-1.5 text-right text-zinc-700">{(r.winRate * 100).toFixed(1)}%</td>
+                          <td className="py-1.5 text-right text-zinc-500">{r.tradeCount}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </>
+  );
 }
 
 // ── AI 分析弹窗 ────────────────────────────────────────────
@@ -190,7 +313,7 @@ function BacktestTab() {
   const today = new Date().toISOString().slice(0, 10);
   const oneYearAgo = new Date(Date.now() - 365 * 86400000).toISOString().slice(0, 10);
   const [symbol, setSymbol] = useState("BTCUSDT");
-  const [strategyCode, setStrategyCode] = useState("ma_cross");
+  const [strategyCode, setStrategyCode] = useState("supertrend");
   const [startDate, setStartDate] = useState(oneYearAgo);
   const [endDate, setEndDate] = useState(today);
   const [initCapital, setInitCapital] = useState("10000");
@@ -200,7 +323,7 @@ function BacktestTab() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [aiOpen, setAiOpen] = useState(false);
 
-  const strategy = STRATEGY_DEFS.find(s => s.code === strategyCode) ?? STRATEGY_DEFS[0]!;
+  const strategy = ALL_CRYPTO_STRATEGIES.find(s => s.code === strategyCode) ?? ALL_CRYPTO_STRATEGIES[0]!;
 
   useEffect(() => {
     const d: Record<string, string> = {};
@@ -264,7 +387,7 @@ function BacktestTab() {
   const sig = signalData?.liveSignal;
 
   const backtestContext = selected && selected.status === "done" ? (() => {
-    const stratDef = STRATEGY_DEFS.find(s => s.code === selected.strategyCode);
+    const stratDef = ALL_CRYPTO_STRATEGIES.find(s => s.code === selected.strategyCode);
     const parsedParams = JSON.parse(selected.params) as Record<string, number>;
     const paramStr = stratDef?.params.map(p => `${p.label}=${parsedParams[p.key] ?? p.default}`).join(", ") ?? "";
     const recent = trades.slice(-5);
@@ -303,7 +426,12 @@ function BacktestTab() {
           <div>
             <p className="mb-1 text-xs text-zinc-500">策略</p>
             <select value={strategyCode} onChange={e => setStrategyCode(e.target.value)} className="w-full rounded-lg border border-zinc-200 px-2 py-1.5 text-sm outline-none">
-              {STRATEGY_DEFS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
+              <optgroup label="── 币圈专用策略 ──">
+                {CRYPTO_STRATEGY_DEFS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
+              </optgroup>
+              <optgroup label="── 通用技术策略 ──">
+                {STRATEGY_DEFS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
+              </optgroup>
             </select>
             {strategy.desc && <p className="mt-1.5 text-xs text-zinc-400 leading-relaxed">{strategy.desc}</p>}
           </div>
@@ -329,6 +457,7 @@ function BacktestTab() {
             className="flex items-center justify-center gap-2 rounded-xl bg-zinc-900 py-2.5 text-sm font-medium text-white hover:bg-zinc-700 disabled:opacity-40">
             <Play size={14} />{submitting ? "提交中..." : "执行回测"}
           </button>
+          <CryptoComparePanel symbol={symbol} interval="1d" startDate={startDate} endDate={endDate} initCapital={initCapital} mode={mode} />
         </div>
 
         {/* 历史记录 */}
@@ -359,7 +488,7 @@ function BacktestTab() {
         {selected ? (
           <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
             <div className="flex items-center justify-between mb-4">
-              <p className="text-sm font-semibold text-zinc-800">{selected.symbol} · {STRATEGY_DEFS.find(s => s.code === selected.strategyCode)?.label}</p>
+              <p className="text-sm font-semibold text-zinc-800">{selected.symbol} · {ALL_CRYPTO_STRATEGIES.find(s => s.code === selected.strategyCode)?.label}</p>
               <div className="flex items-center gap-2">
                 {selected.status === "done" && (
                   <button type="button" onClick={() => setAiOpen(true)} className="flex items-center gap-1.5 rounded-lg bg-zinc-900 px-3 py-1.5 text-xs text-white hover:bg-zinc-700">
@@ -438,16 +567,370 @@ function BacktestTab() {
   );
 }
 
+// ── 币圈模拟盘 Tab ─────────────────────────────────────────
+type CryptoPaper = {
+  id: number; symbol: string; name: string; strategyCode: string;
+  initCapital: number; startDate: string;
+  currentValue: number | null; totalPnl: number | null; totalReturn: number | null;
+  inPosition: boolean; entryPrice: number | null; tradeCount: number;
+  trades: string | null; status: string; createdAt: string;
+};
+type CryptoPaperDetail = CryptoPaper & {
+  equityCurve?: { date: string; value: number; benchmark: number }[];
+  interval?: string;
+};
+type PaperTrade = { entryDate: string; exitDate: string; entryPrice: number; exitPrice: number; pnl: number; pnlPct: number };
+
+function CryptoPaperDetailModal({ record, onClose }: { record: CryptoPaper; onClose: () => void }) {
+  let interval = "1d";
+  let savedParams: Record<string, string> = {};
+  try {
+    const meta = JSON.parse(record.name) as { interval?: string; params?: Record<string, number> };
+    interval = meta.interval ?? "1d";
+    Object.entries(meta.params ?? {}).forEach(([k, v]) => { savedParams[k] = String(v); });
+  } catch { /* ignore */ }
+
+  const strategyDef = ALL_CRYPTO_STRATEGIES.find(s => s.code === record.strategyCode);
+  const [customParams, setCustomParams] = useState<Record<string, string>>(() => {
+    const init: Record<string, string> = {};
+    strategyDef?.params.forEach(p => { init[p.key] = savedParams[p.key] ?? String(p.default); });
+    return init;
+  });
+
+  const paramQuery = strategyDef?.params.map(p => `${p.key}=${customParams[p.key] ?? p.default}`).join("&") ?? "";
+
+  const { data: detail, isLoading, refetch } = useQuery<CryptoPaperDetail>({
+    queryKey: ["crypto-paper-detail", record.id, paramQuery],
+    queryFn: async () => {
+      const r = await fetch(`/api/crypto/paper/${record.id}?${paramQuery}`);
+      if (!r.ok) { const e = await r.json() as { error: string }; throw new Error(e.error); }
+      return r.json();
+    },
+    refetchInterval: 60_000,
+  });
+
+  const d = detail ?? record;
+  const trades: PaperTrade[] = d.trades ? (JSON.parse(d.trades) as PaperTrade[]) : [];
+  const equityCurve = detail?.equityCurve ?? [];
+  const pnl = d.totalPnl ?? 0;
+  const ret = d.totalReturn ?? 0;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div className="flex h-[90vh] w-full max-w-2xl flex-col rounded-2xl bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between border-b border-zinc-100 px-4 py-3">
+          <div>
+            <span className="text-lg font-bold text-zinc-900">{d.symbol}</span>
+            <span className="ml-2 text-sm text-zinc-400">{strategyDef?.label ?? d.strategyCode}</span>
+            <span className="ml-2 text-xs text-zinc-400">{interval} K线</span>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-md p-1 text-zinc-400 hover:text-zinc-700"><X size={18} /></button>
+        </div>
+        <div className="flex-1 overflow-y-auto">
+          <div className="border-b border-zinc-100 px-4 pt-3 pb-1">
+            {isLoading ? (
+              <div className="flex h-56 items-center justify-center text-sm text-zinc-400">加载中...</div>
+            ) : equityCurve.length > 0 ? (
+              <EquityChart data={equityCurve} trades={trades} />
+            ) : (
+              <div className="flex h-56 items-center justify-center text-sm text-zinc-400">暂无图表数据</div>
+            )}
+          </div>
+          <div className="space-y-4 p-4">
+            <div className="grid grid-cols-3 gap-3">
+              <div className="rounded-xl bg-zinc-50 p-3 text-center">
+                <p className="text-xs text-zinc-400 mb-1">初始资金</p>
+                <p className="font-semibold text-zinc-800">${fmtN(d.initCapital)}</p>
+              </div>
+              <div className="rounded-xl bg-zinc-50 p-3 text-center">
+                <p className="text-xs text-zinc-400 mb-1">当前市值</p>
+                <p className="font-semibold text-zinc-800">${fmtN(d.currentValue ?? d.initCapital)}</p>
+              </div>
+              <div className={`rounded-xl p-3 text-center ${pnl >= 0 ? "bg-emerald-50" : "bg-rose-50"}`}>
+                <p className="text-xs text-zinc-400 mb-1">总盈亏</p>
+                <p className={`font-semibold ${pnl >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                  {fmt(pnl)} ({fmt(ret, true)})
+                </p>
+              </div>
+            </div>
+            <div className="rounded-xl border border-zinc-100 p-3">
+              <p className="text-xs font-medium text-zinc-500 mb-2">当前状态</p>
+              <div className="flex items-center gap-3 flex-wrap">
+                <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium ${d.inPosition ? "bg-emerald-100 text-emerald-700" : "bg-zinc-100 text-zinc-600"}`}>
+                  {d.inPosition ? <TrendingUp size={11} /> : <TrendingDown size={11} />}
+                  {d.inPosition ? "持仓中" : "空仓"}
+                </span>
+                {d.inPosition && d.entryPrice && <span className="text-xs text-zinc-500">成本 ${fmtN(d.entryPrice, 4)}</span>}
+                <span className="text-xs text-zinc-400">共交易 {d.tradeCount} 次</span>
+                <span className="text-xs text-zinc-400">开始 {d.startDate}</span>
+              </div>
+            </div>
+            {strategyDef && strategyDef.params.length > 0 && (
+              <div className="rounded-xl border border-zinc-100 p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs font-medium text-zinc-500">策略参数（可调整）</p>
+                  <button type="button" onClick={() => void refetch()} className="text-xs text-zinc-400 hover:text-zinc-700 underline">重新计算</button>
+                </div>
+                <div className="flex flex-wrap gap-3">
+                  {strategyDef.params.map(p => (
+                    <div key={p.key} className="flex items-center gap-1.5">
+                      <span className="text-xs text-zinc-500">{p.label}</span>
+                      <input type="number" value={customParams[p.key] ?? p.default}
+                        onChange={e => setCustomParams(prev => ({ ...prev, [p.key]: e.target.value }))}
+                        className="w-16 rounded-md border border-zinc-200 px-2 py-1 text-xs text-center outline-none focus:border-zinc-400" />
+                    </div>
+                  ))}
+                </div>
+                <p className="mt-1.5 text-xs text-zinc-400">修改参数后点击「重新计算」更新图表</p>
+              </div>
+            )}
+            <div>
+              <p className="text-xs font-medium text-zinc-500 mb-2">交易记录（{trades.length} 笔）</p>
+              {trades.length === 0 ? (
+                <p className="text-sm text-zinc-400 text-center py-4">暂无已完成交易</p>
+              ) : (
+                <div className="rounded-xl border border-zinc-100 overflow-hidden">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b border-zinc-100 text-zinc-400">
+                        <th className="px-3 py-2 text-left">买入</th>
+                        <th className="px-3 py-2 text-left">卖出</th>
+                        <th className="px-3 py-2 text-right">买入价</th>
+                        <th className="px-3 py-2 text-right">卖出价</th>
+                        <th className="px-3 py-2 text-right">盈亏</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...trades].reverse().map((t, i) => (
+                        <tr key={i} className="border-b border-zinc-50 last:border-0">
+                          <td className="px-3 py-2 text-zinc-600">{t.entryDate.slice(0, 10)}</td>
+                          <td className="px-3 py-2 text-zinc-600">{t.exitDate.slice(0, 10)}</td>
+                          <td className="px-3 py-2 text-right text-zinc-700">${fmtN(t.entryPrice, 4)}</td>
+                          <td className="px-3 py-2 text-right text-zinc-700">${fmtN(t.exitPrice, 4)}</td>
+                          <td className={`px-3 py-2 text-right font-medium ${t.pnl >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                            {t.pnl >= 0 ? "+" : ""}{t.pnl.toFixed(2)}
+                            <span className="ml-1 opacity-70">({(t.pnlPct * 100).toFixed(1)}%)</span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CryptoPaperTab() {
+  const qc = useQueryClient();
+  const [showNew, setShowNew] = useState(false);
+  const [selected, setSelected] = useState<CryptoPaper | null>(null);
+
+  // 新建表单状态
+  const [symbol, setSymbol] = useState("BTCUSDT");
+  const [strategyCode, setStrategyCode] = useState(CRYPTO_STRATEGY_DEFS[0]!.code);
+  const [interval, setInterval_] = useState("1d");
+  const [capital, setCapital] = useState("10000");
+  const [startDate, setStartDate] = useState(() => {
+    const d = new Date(); d.setMonth(d.getMonth() - 3); return d.toISOString().slice(0, 10);
+  });
+  const [params, setParams] = useState<Record<string, string>>({});
+  const [creating, setCreating] = useState(false);
+  const [createErr, setCreateErr] = useState("");
+
+  const strategy = ALL_CRYPTO_STRATEGIES.find(s => s.code === strategyCode) ?? ALL_CRYPTO_STRATEGIES[0]!;
+  useEffect(() => {
+    const d: Record<string, string> = {};
+    strategy.params.forEach(p => { d[p.key] = String(p.default); });
+    setParams(d);
+  }, [strategyCode]);
+
+  const { data: list = [], isLoading } = useQuery<CryptoPaper[]>({
+    queryKey: ["crypto-paper"],
+    queryFn: async () => {
+      const r = await fetch("/api/crypto/paper");
+      const raw = await r.json() as CryptoPaper[];
+      // 并发刷新最新状态
+      const refreshed = await Promise.all(raw.map(async item => {
+        try {
+          const r2 = await fetch(`/api/crypto/paper/${item.id}`);
+          if (r2.ok) return await r2.json() as CryptoPaper;
+        } catch { /* ignore */ }
+        return item;
+      }));
+      return refreshed;
+    },
+    refetchInterval: 120_000,
+  });
+
+  async function handleCreate() {
+    setCreating(true); setCreateErr("");
+    try {
+      const res = await fetch("/api/crypto/paper", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          symbol: symbol.toUpperCase(),
+          strategyCode,
+          params: Object.fromEntries(Object.entries(params).map(([k, v]) => [k, Number(v)])),
+          initCapital: Number(capital),
+          interval,
+          startDate,
+        }),
+      });
+      if (!res.ok) throw new Error("创建失败");
+      setShowNew(false);
+      void qc.invalidateQueries({ queryKey: ["crypto-paper"] });
+    } catch (e) {
+      setCreateErr(e instanceof Error ? e.message : "创建失败");
+    } finally { setCreating(false); }
+  }
+
+  async function handleDelete(id: number, e: React.MouseEvent) {
+    e.stopPropagation();
+    await fetch(`/api/crypto/paper/${id}`, { method: "DELETE" });
+    void qc.invalidateQueries({ queryKey: ["crypto-paper"] });
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-zinc-500">用真实行情数据验证策略，不涉及真实资金</p>
+        <button type="button" onClick={() => setShowNew(true)}
+          className="flex items-center gap-1.5 rounded-xl bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700">
+          <Play size={13} /> 新建模拟
+        </button>
+      </div>
+
+      {/* 新建表单 */}
+      {showNew && (
+        <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
+          <div className="flex items-center justify-between mb-4">
+            <p className="font-semibold text-zinc-800 text-sm">新建模拟盘</p>
+            <button type="button" onClick={() => setShowNew(false)} className="text-zinc-400 hover:text-zinc-700"><X size={16} /></button>
+          </div>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <div>
+              <p className="text-xs text-zinc-500 mb-1">交易对</p>
+              <select value={symbol} onChange={e => setSymbol(e.target.value)} className="w-full rounded-lg border border-zinc-200 px-2 py-2 text-sm outline-none">
+                {DEFAULT_SYMBOLS.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            <div>
+              <p className="text-xs text-zinc-500 mb-1">K线周期</p>
+              <select value={interval} onChange={e => setInterval_(e.target.value)} className="w-full rounded-lg border border-zinc-200 px-2 py-2 text-sm outline-none">
+                {INTERVALS.map(i => <option key={i.value} value={i.value}>{i.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <p className="text-xs text-zinc-500 mb-1">初始资金（USDT）</p>
+              <input type="number" value={capital} onChange={e => setCapital(e.target.value)} className="w-full rounded-lg border border-zinc-200 px-2 py-2 text-sm outline-none" />
+            </div>
+            <div>
+              <p className="text-xs text-zinc-500 mb-1">开始日期</p>
+              <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="w-full rounded-lg border border-zinc-200 px-2 py-2 text-sm outline-none" />
+            </div>
+            <div className="col-span-2 sm:col-span-2">
+              <p className="text-xs text-zinc-500 mb-1">策略</p>
+              <select value={strategyCode} onChange={e => setStrategyCode(e.target.value)} className="w-full rounded-lg border border-zinc-200 px-2 py-2 text-sm outline-none">
+                <optgroup label="币圈专用策略">
+                  {CRYPTO_STRATEGY_DEFS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
+                </optgroup>
+                <optgroup label="通用策略">
+                  {STRATEGY_DEFS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
+                </optgroup>
+              </select>
+            </div>
+            {strategy.params.map(p => (
+              <div key={p.key}>
+                <p className="text-xs text-zinc-500 mb-1">{p.label}</p>
+                <input type="number" value={params[p.key] ?? p.default} onChange={e => setParams(prev => ({ ...prev, [p.key]: e.target.value }))} className="w-full rounded-lg border border-zinc-200 px-2 py-2 text-sm outline-none" />
+              </div>
+            ))}
+          </div>
+          {createErr && <p className="mt-2 text-sm text-rose-600">{createErr}</p>}
+          <button type="button" onClick={() => void handleCreate()} disabled={creating}
+            className="mt-4 w-full rounded-xl bg-zinc-900 py-2.5 text-sm font-medium text-white hover:bg-zinc-700 disabled:opacity-40">
+            {creating ? "创建中..." : "开始模拟"}
+          </button>
+        </div>
+      )}
+
+      {isLoading && <p className="text-center text-sm text-zinc-400 py-12">加载中...</p>}
+
+      {!isLoading && list.length === 0 && !showNew && (
+        <div className="flex flex-col items-center gap-3 py-20 text-zinc-400">
+          <p className="text-sm">还没有模拟盘，点击「新建模拟」开始</p>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        {list.map(item => {
+          const pnl = item.totalPnl ?? 0;
+          const ret = item.totalReturn ?? 0;
+          let interval = "1d";
+          try { const m = JSON.parse(item.name) as { interval?: string }; interval = m.interval ?? "1d"; } catch { /* ignore */ }
+          const stratDef = ALL_CRYPTO_STRATEGIES.find(s => s.code === item.strategyCode);
+          return (
+            <div key={item.id} onClick={() => setSelected(item)}
+              className="cursor-pointer rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm hover:border-zinc-300 hover:shadow-md transition">
+              <div className="flex items-start justify-between mb-3">
+                <div>
+                  <p className="font-semibold text-zinc-800">{item.symbol}</p>
+                  <p className="text-xs text-zinc-400">{stratDef?.label ?? item.strategyCode} · {interval}</p>
+                </div>
+                <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${item.inPosition ? "bg-emerald-100 text-emerald-700" : "bg-zinc-100 text-zinc-500"}`}>
+                  {item.inPosition ? <TrendingUp size={10} /> : <TrendingDown size={10} />}
+                  {item.inPosition ? "持仓中" : "空仓"}
+                </span>
+              </div>
+              <div className="grid grid-cols-3 gap-2 mb-3">
+                <div>
+                  <p className="text-xs text-zinc-400">初始资金</p>
+                  <p className="text-sm font-medium text-zinc-700">${fmtN(item.initCapital)}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-zinc-400">当前市值</p>
+                  <p className="text-sm font-medium text-zinc-700">${fmtN(item.currentValue ?? item.initCapital)}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-zinc-400">总盈亏</p>
+                  <p className={`text-sm font-medium ${pnl >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{fmt(pnl)}</p>
+                </div>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className={`text-sm font-semibold ${ret >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{fmt(ret, true)}</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-zinc-400">{item.tradeCount} 笔交易</span>
+                  <button type="button" onClick={e => void handleDelete(item.id, e)} className="rounded-md p-1 text-zinc-300 hover:text-rose-500"><X size={14} /></button>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {selected && <CryptoPaperDetailModal record={selected} onClose={() => setSelected(null)} />}
+    </div>
+  );
+}
+
 // ── 新建机器人弹窗 ─────────────────────────────────────────
 function NewBotModal({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: () => void }) {
+  const [mode, setMode] = useState<"ai" | "manual">("ai");
+  const [aiMode, setAiMode] = useState<"short" | "medium" | "long">("medium");
   const [symbol, setSymbol] = useState("BTCUSDT");
-  const [strategyCode, setStrategyCode] = useState("ma_cross");
+  const [strategyCode, setStrategyCode] = useState("supertrend");
   const [interval, setInterval_] = useState("1d");
   const [quoteQty, setQuoteQty] = useState("100");
   const [params, setParams] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
 
-  const strategy = STRATEGY_DEFS.find(s => s.code === strategyCode) ?? STRATEGY_DEFS[0]!;
+  const strategy = ALL_CRYPTO_STRATEGIES.find(s => s.code === strategyCode) ?? ALL_CRYPTO_STRATEGIES[0]!;
 
   useEffect(() => {
     const d: Record<string, string> = {};
@@ -455,14 +938,18 @@ function NewBotModal({ open, onClose, onCreated }: { open: boolean; onClose: () 
     setParams(d);
   }, [strategyCode]);
 
+  const AI_MODES = [
+    { value: "short", label: "短线", desc: "1h K线，快进快出，适合波动行情" },
+    { value: "medium", label: "中线", desc: "4h K线，持仓数天到数周" },
+    { value: "long", label: "长线", desc: "日线，趋势跟踪，持仓数周到数月" },
+  ] as const;
+
   async function handleCreate() {
     setLoading(true);
-    const numParams: Record<string, number> = {};
-    Object.entries(params).forEach(([k, v]) => { numParams[k] = Number(v); });
-    await fetch("/api/crypto/bots", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ symbol: symbol.toUpperCase(), strategyCode, params: numParams, interval, quoteQty: Number(quoteQty) }),
-    });
+    const body = mode === "ai"
+      ? { symbol: symbol.toUpperCase(), aiMode, quoteQty: Number(quoteQty) }
+      : { symbol: symbol.toUpperCase(), strategyCode, params: Object.fromEntries(Object.entries(params).map(([k, v]) => [k, Number(v)])), interval, quoteQty: Number(quoteQty) };
+    await fetch("/api/crypto/bots", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     setLoading(false);
     onCreated();
     onClose();
@@ -477,31 +964,70 @@ function NewBotModal({ open, onClose, onCreated }: { open: boolean; onClose: () 
           <button type="button" onClick={onClose}><X size={16} className="text-zinc-400" /></button>
         </div>
         <div className="flex flex-col gap-3">
+          {/* 模式切换 */}
+          <div className="flex gap-1 rounded-xl bg-zinc-100 p-1">
+            {([["ai", "🤖 AI 自动"], ["manual", "⚙️ 手动配置"]] as const).map(([key, label]) => (
+              <button key={key} type="button" onClick={() => setMode(key)}
+                className={`flex-1 rounded-lg py-1.5 text-xs font-medium transition ${mode === key ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500"}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {/* 交易对 */}
           <div>
             <p className="text-xs text-zinc-500 mb-1">交易对</p>
             <select value={symbol} onChange={e => setSymbol(e.target.value)} className="w-full rounded-lg border border-zinc-200 px-2 py-2 text-sm outline-none">
               {DEFAULT_SYMBOLS.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
           </div>
-          <div>
-            <p className="text-xs text-zinc-500 mb-1">策略</p>
-            <select value={strategyCode} onChange={e => setStrategyCode(e.target.value)} className="w-full rounded-lg border border-zinc-200 px-2 py-2 text-sm outline-none">
-              {STRATEGY_DEFS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
-            </select>
-            {strategy.desc && <p className="mt-1.5 text-xs text-zinc-400 leading-relaxed">{strategy.desc}</p>}
-          </div>
-          <div>
-            <p className="text-xs text-zinc-500 mb-1">K线周期</p>
-            <select value={interval} onChange={e => setInterval_(e.target.value)} className="w-full rounded-lg border border-zinc-200 px-2 py-2 text-sm outline-none">
-              {INTERVALS.map(i => <option key={i.value} value={i.value}>{i.label}</option>)}
-            </select>
-          </div>
-          {strategy.params.map(p => (
-            <div key={p.key}>
-              <p className="text-xs text-zinc-500 mb-0.5">{p.label}</p>
-              <input type="number" value={params[p.key] ?? p.default} onChange={e => setParams(prev => ({ ...prev, [p.key]: e.target.value }))} className="w-full rounded-lg border border-zinc-200 px-2 py-1.5 text-sm outline-none" />
+
+          {mode === "ai" ? (
+            /* AI 模式：选交易周期 */
+            <div>
+              <p className="text-xs text-zinc-500 mb-2">交易周期</p>
+              <div className="flex flex-col gap-2">
+                {AI_MODES.map(m => (
+                  <label key={m.value} className={`flex items-start gap-3 rounded-xl border p-3 cursor-pointer transition ${aiMode === m.value ? "border-zinc-900 bg-zinc-50" : "border-zinc-200 hover:border-zinc-300"}`}>
+                    <input type="radio" name="ai-mode" value={m.value} checked={aiMode === m.value} onChange={() => setAiMode(m.value)} className="mt-0.5" />
+                    <div>
+                      <p className="text-sm font-medium text-zinc-800">{m.label}</p>
+                      <p className="text-xs text-zinc-400 mt-0.5">{m.desc}</p>
+                    </div>
+                  </label>
+                ))}
+              </div>
+              <p className="mt-2 text-xs text-zinc-400 bg-blue-50 rounded-lg px-3 py-2">AI 会根据市场趋势/震荡状态自动选择最优策略，每次执行时动态调整</p>
             </div>
-          ))}
+          ) : (
+            /* 手动模式 */
+            <>
+              <div>
+                <p className="text-xs text-zinc-500 mb-1">策略</p>
+                <select value={strategyCode} onChange={e => setStrategyCode(e.target.value)} className="w-full rounded-lg border border-zinc-200 px-2 py-2 text-sm outline-none">
+                  <optgroup label="── 币圈专用策略 ──">
+                    {CRYPTO_STRATEGY_DEFS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
+                  </optgroup>
+                  <optgroup label="── 通用技术策略 ──">
+                    {STRATEGY_DEFS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
+                  </optgroup>
+                </select>
+              </div>
+              <div>
+                <p className="text-xs text-zinc-500 mb-1">K线周期</p>
+                <select value={interval} onChange={e => setInterval_(e.target.value)} className="w-full rounded-lg border border-zinc-200 px-2 py-2 text-sm outline-none">
+                  {INTERVALS.map(i => <option key={i.value} value={i.value}>{i.label}</option>)}
+                </select>
+              </div>
+              {strategy.params.map(p => (
+                <div key={p.key}>
+                  <p className="text-xs text-zinc-500 mb-0.5">{p.label}</p>
+                  <input type="number" value={params[p.key] ?? p.default} onChange={e => setParams(prev => ({ ...prev, [p.key]: e.target.value }))} className="w-full rounded-lg border border-zinc-200 px-2 py-1.5 text-sm outline-none" />
+                </div>
+              ))}
+            </>
+          )}
+
           <div>
             <p className="text-xs text-zinc-500 mb-1">每次买入金额（USDT）</p>
             <input type="number" value={quoteQty} onChange={e => setQuoteQty(e.target.value)} className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm outline-none" />
@@ -519,7 +1045,7 @@ function NewBotModal({ open, onClose, onCreated }: { open: boolean; onClose: () 
 // ── 主页面 ─────────────────────────────────────────────────
 export default function CryptoPage() {
   const qc = useQueryClient();
-  const [tab, setTab] = useState<"bots" | "backtest">("bots");
+  const [tab, setTab] = useState<"bots" | "backtest" | "paper">("bots");
   const [newBotOpen, setNewBotOpen] = useState(false);
   const [expandedBot, setExpandedBot] = useState<number | null>(null);
   const [checking, setChecking] = useState<number | null>(null);
@@ -571,7 +1097,7 @@ export default function CryptoPage() {
       <div className="flex-1 min-w-0 flex flex-col gap-4">
         {/* Tab 切换 */}
         <div className="flex gap-1 rounded-xl bg-zinc-100 p-1 w-fit">
-          {([["bots", "行情 & 机器人"], ["backtest", "回测广场"]] as const).map(([key, label]) => (
+          {([["bots", "行情 & 机器人"], ["backtest", "回测广场"], ["paper", "模拟盘"]] as const).map(([key, label]) => (
             <button key={key} type="button" onClick={() => setTab(key)}
               className={`rounded-lg px-4 py-1.5 text-sm font-medium transition ${tab === key ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"}`}>
               {label}
@@ -620,7 +1146,12 @@ export default function CryptoPage() {
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2">
                               <span className="font-medium text-sm text-zinc-800">{bot.symbol}</span>
-                              <span className="text-xs text-zinc-400">{STRATEGY_DEFS.find(s => s.code === bot.strategyCode)?.label ?? bot.strategyCode}</span>
+                              {bot.aiMode ? (
+                                <span className="rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700">
+                                  AI {bot.aiMode === "short" ? "短线" : bot.aiMode === "medium" ? "中线" : "长线"}
+                                </span>
+                              ) : null}
+                              <span className="text-xs text-zinc-400">{ALL_CRYPTO_STRATEGIES.find(s => s.code === bot.strategyCode)?.label ?? bot.strategyCode}</span>
                               <span className="text-xs text-zinc-400">{bot.interval}</span>
                             </div>
                             <div className="flex items-center gap-3 mt-0.5 text-xs text-zinc-500">
@@ -684,6 +1215,7 @@ export default function CryptoPage() {
         )}
 
         {tab === "backtest" && <BacktestTab />}
+        {tab === "paper" && <CryptoPaperTab />}
       </div>
 
       {/* 右侧工具栏 */}

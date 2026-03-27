@@ -3,6 +3,8 @@
  * 数据来源：新浪日线 OHLCV
  */
 
+import { genCryptoSignals } from "./crypto-strategies";
+
 export type Candle = { time: string; open: number; high: number; low: number; close: number; volume: number };
 export type BacktestParams = Record<string, number>;
 export type Trade = { entryDate: string; exitDate: string; entryPrice: number; exitPrice: number; pnl: number; pnlPct: number };
@@ -40,7 +42,7 @@ function trueRange(candles: Candle[]): number[] {
   });
 }
 
-function atrArr(candles: Candle[], p: number): (number | null)[] { return sma(trueRange(candles), p); }
+export function atrArr(candles: Candle[], p: number): (number | null)[] { return sma(trueRange(candles), p); }
 
 function calcRsi(closes: number[], p: number): (number | null)[] {
   const out: (number | null)[] = new Array(p).fill(null);
@@ -218,6 +220,12 @@ export const STRATEGY_DEFS: StrategyDef[] = [
 // ── 信号生成 ──────────────────────────────────────────────
 
 function genSignals(candles: Candle[], code: string, p: BacktestParams): (1 | -1 | 0)[] {
+  // 路由到币圈专用策略
+  const cryptoCodes = ["turtle_crypto", "supertrend", "vwap_revert", "ema_ribbon", "rsi_divergence", "bb_squeeze", "funding_arb", "ichimoku_cloud", "heikin_ashi_trend", "scalping_ema", "stoch_rsi", "macd_scalp", "breakout_scalp"];
+  if (cryptoCodes.includes(code)) {
+    return genCryptoSignals(candles, code, p);
+  }
+
   const closes = candles.map(c => c.close);
   const n = candles.length;
   const sig: (1 | -1 | 0)[] = new Array(n).fill(0);

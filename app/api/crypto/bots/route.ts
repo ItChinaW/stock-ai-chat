@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
+import { AI_MODE_CONFIG, type AiMode } from "@/lib/ai-strategy-selector";
 
 export async function GET() {
   const bots = await prisma.cryptoBot.findMany({
@@ -12,18 +13,27 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   const body = await req.json() as {
-    symbol: string; strategyCode: string; params?: Record<string, number>;
-    interval?: string; quoteQty: number;
+    symbol: string;
+    aiMode?: AiMode;           // AI 自动模式
+    strategyCode?: string;     // 手动模式
+    params?: Record<string, number>;
+    quoteQty: number;
   };
+
+  // AI 模式：自动设置 interval 和初始策略
+  const aiMode = body.aiMode ?? null;
+  const modeConfig = aiMode ? AI_MODE_CONFIG[aiMode] : null;
+
   const bot = await prisma.cryptoBot.create({
     data: {
       userId: 1,
       symbol: body.symbol.toUpperCase(),
-      strategyCode: body.strategyCode,
-      params: JSON.stringify(body.params ?? {}),
-      interval: body.interval ?? "1d",
+      strategyCode: modeConfig ? modeConfig.strategies[0]!.code : (body.strategyCode ?? "ma_cross"),
+      params: JSON.stringify(modeConfig ? modeConfig.strategies[0]!.params : (body.params ?? {})),
+      interval: modeConfig ? modeConfig.interval : "1d",
       quoteQty: body.quoteQty,
       status: "stopped",
+      aiMode,
     },
   });
   return NextResponse.json(bot, { status: 201 });
