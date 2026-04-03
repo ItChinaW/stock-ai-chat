@@ -59,6 +59,32 @@ function calcBoll(closes: number[], p = 20, mult = 2) {
   return { mid, upper, lower };
 }
 
+// ADX 计算（用于趋势强度过滤）
+function calcAdx(candles: Candle[], p = 14): (number | null)[] {
+  const n = candles.length;
+  const pdm: number[] = [], ndm: number[] = [], tr: number[] = [];
+  for (let i = 0; i < n; i++) {
+    if (i === 0) { pdm.push(0); ndm.push(0); tr.push(candles[i]!.high - candles[i]!.low); continue; }
+    const c = candles[i]!, prev = candles[i - 1]!;
+    const upMove = c.high - prev.high, downMove = prev.low - c.low;
+    pdm.push(upMove > downMove && upMove > 0 ? upMove : 0);
+    ndm.push(downMove > upMove && downMove > 0 ? downMove : 0);
+    tr.push(Math.max(c.high - c.low, Math.abs(c.high - prev.close), Math.abs(c.low - prev.close)));
+  }
+  const smoothTr = sma(tr, p), smoothPdm = sma(pdm, p), smoothNdm = sma(ndm, p);
+  const dx: (number | null)[] = smoothTr.map((t, i) => {
+    if (t == null || t === 0 || smoothPdm[i] == null || smoothNdm[i] == null) return null;
+    const pdi = (smoothPdm[i]! / t) * 100, ndi = (smoothNdm[i]! / t) * 100;
+    const sum = pdi + ndi;
+    return sum === 0 ? 0 : (Math.abs(pdi - ndi) / sum) * 100;
+  });
+  const validDx = dx.filter((v): v is number => v != null);
+  const adxSmooth = sma(validDx, p);
+  const adx: (number | null)[] = new Array(dx.length - adxSmooth.length).fill(null);
+  adx.push(...adxSmooth);
+  return adx;
+}
+
 // ── 币圈策略信号生成 ───────────────────────────────────────
 
 export function genCryptoSignals(candles: Candle[], code: string, p: BacktestParams): (1 | -1 | 0)[] {
@@ -371,6 +397,34 @@ export function genCryptoSignals(candles: Candle[], code: string, p: BacktestPar
       // 向下跌破近期低点
       else if (closes[i]! < lowestLow && closes[i - 1]! >= lowestLow) sig[i] = -1;
     }
+
+  } else if (code === "intraday_trend") {
+    // 日内趋势跟随策略
+    // 逻辑：EMA(fastP) 上穿 EMA(slowP) 且 ADX > adxThreshold（趋势足够强）时买入
+    //       EMA(fastP) 下穿 EMA(slowP) 时卖出
+    //       额外用 EMA(trendP) 过滤大方向，只在大趋势方向上开仓
+    const fastP = p.fastPeriod ?? 9;
+    const slowP = p.slowPeriod ?? 21;
+    const trendP = p.trendPeriod ?? 55;
+    const adxP = p.adxPeriod ?? 14;
+    const adxThr = p.adxThreshold ?? 20;
+
+    const fastEma = ema(closes, fastP);
+    const slowEma = ema(closes, slowP);
+    const trendEma = ema(closes, trendP);
+    const adxVals = calcAdx(candles, adxP);
+
+    for (let i = 1; i < n; i++) {
+      const f = fastEma[i], s = slowEma[i], t = trendEma[i], adxV = adxVals[i];
+      const pf = fastEma[i - 1], ps = slowEma[i - 1];
+      if (f == null || s == null || t == null || adxV == null || pf == null || ps == null) continue;
+
+      const trendStrong = adxV > adxThr;
+      // 金叉 + 趋势强 + 价格在长期均线上方（多头市场）
+      if (f > s && pf <= ps && trendStrong && closes[i]! > t) sig[i] = 1;
+      // 死叉 + 价格在长期均线下方（空头市场）
+      else if (f < s && pf >= ps && closes[i]! < t) sig[i] = -1;
+    }
   }
 
   return sig;
@@ -502,6 +556,18 @@ export const CRYPTO_STRATEGY_DEFS: StrategyDef[] = [
     params: [
       { key: "lookback", label: "回看K线数", default: 10 },
       { key: "volMult", label: "成交量放大倍数", default: 1.2 },
+    ],
+  },
+  {
+    code: "intraday_trend",
+    label: "日内趋势跟随",
+    desc: "EMA(9/21) 金叉死叉 + ADX 趋势强度过滤 + EMA(55) 大方向确认。只在趋势明确（ADX > 阈值）且大方向一致时入场，避免震荡市频繁假信号。适合 1h/4h 日内波段。",
+    params: [
+      { key: "fastPeriod", label: "快线周期", default: 9 },
+      { key: "slowPeriod", label: "慢线周期", default: 21 },
+      { key: "trendPeriod", label: "趋势过滤周期", default: 55 },
+      { key: "adxPeriod", label: "ADX周期", default: 14 },
+      { key: "adxThreshold", label: "ADX趋势阈值", default: 20 },
     ],
   },
 ];

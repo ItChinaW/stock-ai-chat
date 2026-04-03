@@ -8,8 +8,8 @@ async function runBacktest(id: number) {
   if (!record) return;
   await prisma.backtest.update({ where: { id }, data: { status: "running" } });
   try {
-    // 用币安 K 线，symbol 存的是 BTCUSDT 格式
-    const allCandles = await getKlines(record.symbol, "1d", 1000);
+    const interval = record.interval ?? "1d";
+    const allCandles = await getKlines(record.symbol, interval, 1000);
     const candles = allCandles.filter(c => c.time >= record.startDate && c.time <= record.endDate);
     if (candles.length < 10) throw new Error("数据不足，请检查交易对或日期范围");
 
@@ -50,7 +50,7 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   const body = await request.json() as {
     symbol: string; strategyCode: string; params?: Record<string, number>;
-    startDate: string; endDate: string; initCapital?: number; mode?: string;
+    interval?: string; startDate: string; endDate: string; initCapital?: number; mode?: string;
   };
 
   const record = await prisma.backtest.create({
@@ -60,6 +60,7 @@ export async function POST(request: NextRequest) {
       symbol: body.symbol.toUpperCase(),
       strategyCode: body.strategyCode,
       params: JSON.stringify(body.params ?? {}),
+      interval: body.interval ?? "1d",
       startDate: body.startDate,
       endDate: body.endDate,
       initCapital: body.initCapital ?? 10000,

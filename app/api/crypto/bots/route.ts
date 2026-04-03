@@ -14,19 +14,19 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   const body = await req.json() as {
     symbol: string;
-    aiMode?: AiMode;           // AI 自动模式
-    strategyCode?: string;     // 手动模式
+    aiMode?: AiMode;
+    strategyCode?: string;
     params?: Record<string, number>;
     quoteQty: number;
+    paperMode?: boolean;
   };
 
-  // AI 模式：自动设置 interval 和初始策略
   const aiMode = body.aiMode ?? null;
   const modeConfig = aiMode ? AI_MODE_CONFIG[aiMode] : null;
 
   const bot = await prisma.cryptoBot.create({
     data: {
-      userId: 1,
+      user: { connect: { id: 1 } },
       symbol: body.symbol.toUpperCase(),
       strategyCode: modeConfig ? modeConfig.strategies[0]!.code : (body.strategyCode ?? "ma_cross"),
       params: JSON.stringify(modeConfig ? modeConfig.strategies[0]!.params : (body.params ?? {})),
@@ -34,6 +34,7 @@ export async function POST(req: NextRequest) {
       quoteQty: body.quoteQty,
       status: "stopped",
       aiMode,
+      paperMode: body.paperMode ?? false,
     },
   });
   return NextResponse.json(bot, { status: 201 });

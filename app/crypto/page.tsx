@@ -29,9 +29,9 @@ const MODELS = [
 
 type Ticker = { price: number; change: number; changePct: number };
 type Trade = { id: number; side: string; price: number; qty: number; quoteQty: number; pnl: number | null; pnlPct: number | null; createdAt: string };
-type Bot = { id: number; symbol: string; strategyCode: string; params: string; interval: string; quoteQty: number; status: string; aiMode: string | null; inPosition: boolean; entryPrice: number | null; entryDate: string | null; lastChecked: string | null; createdAt: string; trades: Trade[] };
+type Bot = { id: number; symbol: string; strategyCode: string; params: string; interval: string; quoteQty: number; status: string; paperMode: boolean; aiMode: string | null; inPosition: boolean; entryPrice: number | null; entryDate: string | null; lastChecked: string | null; createdAt: string; trades: Trade[] };
 type Balance = { asset: string; free: number; locked: number };
-type BacktestRecord = { id: number; name: string; symbol: string; strategyCode: string; params: string; startDate: string; endDate: string; initCapital: number; mode: string; totalReturn: number | null; totalPnl: number | null; annualReturn: number | null; maxDrawdown: number | null; tradeCount: number | null; winRate: number | null; sharpe: number | null; sortino: number | null; calmar: number | null; avgHoldDays: number | null; avgWin: number | null; avgLoss: number | null; profitFactor: number | null; equityCurve: string | null; trades: string | null; status: string; errorMsg: string | null; createdAt: string };
+type BacktestRecord = { id: number; name: string; symbol: string; strategyCode: string; params: string; interval: string; startDate: string; endDate: string; initCapital: number; mode: string; totalReturn: number | null; totalPnl: number | null; annualReturn: number | null; maxDrawdown: number | null; tradeCount: number | null; winRate: number | null; sharpe: number | null; sortino: number | null; calmar: number | null; avgHoldDays: number | null; avgWin: number | null; avgLoss: number | null; profitFactor: number | null; equityCurve: string | null; trades: string | null; status: string; errorMsg: string | null; createdAt: string };
 
 function fmt(v: number | null, isPercent = false, digits = 2) {
   if (v == null) return "-";
@@ -314,6 +314,7 @@ function BacktestTab() {
   const oneYearAgo = new Date(Date.now() - 365 * 86400000).toISOString().slice(0, 10);
   const [symbol, setSymbol] = useState("BTCUSDT");
   const [strategyCode, setStrategyCode] = useState("supertrend");
+  const [interval, setInterval_] = useState("1d");
   const [startDate, setStartDate] = useState(oneYearAgo);
   const [endDate, setEndDate] = useState(today);
   const [initCapital, setInitCapital] = useState("10000");
@@ -364,16 +365,22 @@ function BacktestTab() {
   async function handleSubmit() {
     if (!symbol.trim()) return;
     setSubmitting(true);
-    const numParams: Record<string, number> = { atrPeriod: 14, atrMult: 2 };
-    Object.entries(params).forEach(([k, v]) => { numParams[k] = Number(v); });
-    const res = await fetch("/api/crypto/backtest", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ symbol: symbol.trim().toUpperCase(), strategyCode, params: numParams, startDate, endDate, initCapital: Number(initCapital), mode }),
-    });
-    const record = await res.json() as BacktestRecord;
-    setSubmitting(false);
-    void qc.invalidateQueries({ queryKey: ["crypto-backtests"] });
-    setSelectedId(record.id);
+    try {
+      const numParams: Record<string, number> = { atrPeriod: 14, atrMult: 2 };
+      Object.entries(params).forEach(([k, v]) => { numParams[k] = Number(v); });
+      const res = await fetch("/api/crypto/backtest", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol: symbol.trim().toUpperCase(), strategyCode, params: numParams, interval, startDate, endDate, initCapital: Number(initCapital), mode }),
+      });
+      if (!res.ok) { const text = await res.text(); throw new Error(`提交失败: ${res.status} ${text.slice(0, 200)}`); }
+      const record = await res.json() as BacktestRecord;
+      void qc.invalidateQueries({ queryKey: ["crypto-backtests"] });
+      setSelectedId(record.id);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "提交失败，请重试");
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   async function handleDelete(id: number) {
@@ -408,6 +415,12 @@ function BacktestTab() {
             <p className="mb-1 text-xs text-zinc-500">交易对</p>
             <select value={symbol} onChange={e => setSymbol(e.target.value)} className="w-full rounded-lg border border-zinc-200 px-2 py-1.5 text-sm outline-none">
               {DEFAULT_SYMBOLS.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          <div>
+            <p className="mb-1 text-xs text-zinc-500">K线周期</p>
+            <select value={interval} onChange={e => setInterval_(e.target.value)} className="w-full rounded-lg border border-zinc-200 px-2 py-1.5 text-sm outline-none">
+              {INTERVALS.map(i => <option key={i.value} value={i.value}>{i.label}</option>)}
             </select>
           </div>
           <div>
@@ -928,6 +941,7 @@ function NewBotModal({ open, onClose, onCreated }: { open: boolean; onClose: () 
   const [interval, setInterval_] = useState("1d");
   const [quoteQty, setQuoteQty] = useState("100");
   const [params, setParams] = useState<Record<string, string>>({});
+  const [paperMode, setPaperMode] = useState(true);
   const [loading, setLoading] = useState(false);
 
   const strategy = ALL_CRYPTO_STRATEGIES.find(s => s.code === strategyCode) ?? ALL_CRYPTO_STRATEGIES[0]!;
@@ -947,8 +961,8 @@ function NewBotModal({ open, onClose, onCreated }: { open: boolean; onClose: () 
   async function handleCreate() {
     setLoading(true);
     const body = mode === "ai"
-      ? { symbol: symbol.toUpperCase(), aiMode, quoteQty: Number(quoteQty) }
-      : { symbol: symbol.toUpperCase(), strategyCode, params: Object.fromEntries(Object.entries(params).map(([k, v]) => [k, Number(v)])), interval, quoteQty: Number(quoteQty) };
+      ? { symbol: symbol.toUpperCase(), aiMode, quoteQty: Number(quoteQty), paperMode }
+      : { symbol: symbol.toUpperCase(), strategyCode, params: Object.fromEntries(Object.entries(params).map(([k, v]) => [k, Number(v)])), interval, quoteQty: Number(quoteQty), paperMode };
     await fetch("/api/crypto/bots", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     setLoading(false);
     onCreated();
@@ -1032,6 +1046,23 @@ function NewBotModal({ open, onClose, onCreated }: { open: boolean; onClose: () 
             <p className="text-xs text-zinc-500 mb-1">每次买入金额（USDT）</p>
             <input type="number" value={quoteQty} onChange={e => setQuoteQty(e.target.value)} className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm outline-none" />
           </div>
+
+          {/* 模拟/真实切换 */}
+          <div className="flex gap-1 rounded-xl bg-zinc-100 p-1">
+            <button type="button" onClick={() => setPaperMode(true)}
+              className={`flex-1 rounded-lg py-1.5 text-xs font-medium transition ${paperMode ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500"}`}>
+              🧪 模拟交易
+            </button>
+            <button type="button" onClick={() => setPaperMode(false)}
+              className={`flex-1 rounded-lg py-1.5 text-xs font-medium transition ${!paperMode ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500"}`}>
+              💰 真实交易
+            </button>
+          </div>
+          {paperMode
+            ? <p className="text-xs text-blue-500 bg-blue-50 rounded-lg px-3 py-2">模拟模式：不会真实下单，用当前市价虚拟成交，安全验证策略效果</p>
+            : <p className="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2">⚠️ 真实模式：将使用币安 API 真实下单，请确认 API Key 已配置且资金充足</p>
+          }
+
           <button type="button" onClick={() => void handleCreate()} disabled={loading || !symbol.trim()}
             className="rounded-xl bg-zinc-900 py-2.5 text-sm font-medium text-white hover:bg-zinc-700 disabled:opacity-40">
             {loading ? "创建中..." : "创建"}
@@ -1049,6 +1080,7 @@ export default function CryptoPage() {
   const [newBotOpen, setNewBotOpen] = useState(false);
   const [expandedBot, setExpandedBot] = useState<number | null>(null);
   const [checking, setChecking] = useState<number | null>(null);
+  const [lastCheckResult, setLastCheckResult] = useState<Record<number, { action: string; reason?: string }>>({});
 
   const { data: tickers = {} } = useQuery<Record<string, { price: number; change: number; changePct: number }>>({
     queryKey: ["crypto-tickers"],
@@ -1068,8 +1100,32 @@ export default function CryptoPage() {
   const { data: bots = [], refetch: refetchBots } = useQuery<Bot[]>({
     queryKey: ["crypto-bots"],
     queryFn: async () => { const r = await fetch("/api/crypto/bots"); return r.json(); },
-    refetchInterval: 30_000,
+    refetchInterval: 60_000,
   });
+
+  // 对运行中的机器人按 K 线周期自动触发检查
+  const INTERVAL_MS: Record<string, number> = {
+    "15m": 15 * 60_000, "1h": 60 * 60_000, "4h": 4 * 60 * 60_000, "1d": 24 * 60 * 60_000,
+  };
+  useEffect(() => {
+    const runningBots = bots.filter(b => b.status === "running");
+    if (runningBots.length === 0) return;
+    // 找最短周期，按它定时
+    const minMs = Math.min(...runningBots.map(b => INTERVAL_MS[b.interval] ?? 60 * 60_000));
+    const timer = setInterval(() => {
+      runningBots.forEach(bot => {
+        void fetch(`/api/crypto/bots/${bot.id}`, {
+          method: "PATCH", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "check" }),
+        }).then(r => r.ok ? r.json() : null).then(data => {
+          if (data) setLastCheckResult(prev => ({ ...prev, [bot.id]: data as { action: string; reason?: string } }));
+        });
+      });
+      void refetchBots();
+    }, minMs);
+    return () => clearInterval(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bots.map(b => `${b.id}:${b.status}:${b.interval}`).join(",")]);
 
   async function toggleBot(bot: Bot) {
     const action = bot.status === "running" ? "stop" : "start";
@@ -1079,7 +1135,11 @@ export default function CryptoPage() {
 
   async function checkBot(bot: Bot) {
     setChecking(bot.id);
-    await fetch(`/api/crypto/bots/${bot.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "check" }) });
+    const res = await fetch(`/api/crypto/bots/${bot.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "check" }) });
+    if (res.ok) {
+      const data = await res.json() as { action: string; reason?: string };
+      setLastCheckResult(prev => ({ ...prev, [bot.id]: data }));
+    }
     setChecking(null);
     void refetchBots();
   }
@@ -1146,6 +1206,9 @@ export default function CryptoPage() {
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2">
                               <span className="font-medium text-sm text-zinc-800">{bot.symbol}</span>
+                              {bot.paperMode && (
+                                <span className="rounded-full bg-violet-100 px-2 py-0.5 text-xs font-medium text-violet-700">模拟</span>
+                              )}
                               {bot.aiMode ? (
                                 <span className="rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700">
                                   AI {bot.aiMode === "short" ? "短线" : bot.aiMode === "medium" ? "中线" : "长线"}
@@ -1164,6 +1227,19 @@ export default function CryptoPage() {
                               ) : <span>空仓</span>}
                               {bot.lastChecked && <span>检查 {new Date(bot.lastChecked).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>}
                             </div>
+                            {lastCheckResult[bot.id] && (
+                              <div className="mt-1 text-xs text-zinc-400 truncate max-w-xs">
+                                {lastCheckResult[bot.id]!.action !== "hold"
+                                  ? <span className={lastCheckResult[bot.id]!.action === "buy" ? "text-emerald-600" : "text-rose-500"}>
+                                      {lastCheckResult[bot.id]!.action === "buy" ? "▲ 买入" : "▼ 卖出"}
+                                    </span>
+                                  : <span>持仓观望</span>
+                                }
+                                {lastCheckResult[bot.id]!.reason && (
+                                  <span className="ml-1 text-zinc-400">{lastCheckResult[bot.id]!.reason}</span>
+                                )}
+                              </div>
+                            )}
                           </div>
                           <div className="flex items-center gap-1.5 shrink-0">
                             <button type="button" onClick={() => void checkBot(bot)} disabled={checking === bot.id}

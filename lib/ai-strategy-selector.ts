@@ -4,6 +4,7 @@
  */
 
 import { atrArr } from "./backtest-engine";
+import OpenAI from "openai";
 
 export type AiMode = "short" | "medium" | "long";
 
@@ -93,20 +94,117 @@ export function selectStrategy(candles: Candle[], mode: AiMode): { code: string;
   const config = AI_MODE_CONFIG[mode];
   const market = analyzeMarket(candles);
 
+  // 各策略的倾向分类（趋势 vs 震荡）
+  const trendCodes = new Set(["supertrend", "turtle", "turtle_crypto", "ema_ribbon", "ichimoku_cloud", "heikin_ashi_trend", "ma_cross", "ema_cross", "breakout", "dmi", "atr_break", "macd", "intraday_trend"]);
+  const oscCodes   = new Set(["rsi_divergence", "vwap_revert", "bb_squeeze", "funding_arb", "boll_rsi", "kdj", "rsi", "boll", "macd_kdj", "cci", "stoch_rsi", "macd_scalp", "scalping_ema"]);
+
   let selected = config.strategies[0]!;
   let reason = "";
 
   if (market.isTrending) {
-    // 趋势行情：选趋势跟踪策略
-    const trendStrategies = ["turtle", "ma_cross", "ema_cross", "breakout", "dmi", "atr_break", "macd"];
-    selected = config.strategies.find(s => trendStrategies.includes(s.code)) ?? config.strategies[0]!;
-    reason = `市场处于${market.isUptrend ? "上升" : "下降"}趋势（趋势强度 ${(market.trendStrength * 100).toFixed(2)}%），选用趋势跟踪策略`;
+    const pick = config.strategies.find(s => trendCodes.has(s.code));
+    selected = pick ?? config.strategies[0]!;
+    reason = `市场处于${market.isUptrend ? "上升" : "下降"}趋势（趋势强度 ${(market.trendStrength * 100).toFixed(2)}%），选用趋势跟踪策略 [${selected.code}]`;
   } else {
-    // 震荡行情：选震荡指标策略
-    const oscStrategies = ["boll_rsi", "kdj", "rsi", "boll", "macd_kdj", "cci"];
-    selected = config.strategies.find(s => oscStrategies.includes(s.code)) ?? config.strategies[0]!;
-    reason = `市场处于震荡行情（波动率 ${(market.volatility * 100).toFixed(2)}%），选用震荡指标策略`;
+    const pick = config.strategies.find(s => oscCodes.has(s.code));
+    selected = pick ?? config.strategies[0]!;
+    reason = `市场处于震荡行情（波动率 ${(market.volatility * 100).toFixed(2)}%），选用震荡指标策略 [${selected.code}]`;
   }
 
   return { ...selected, reason };
+}
+
+/**
+ * 获取可用的 AI 客户端（按优先级：DeepSeek > 通义千问 > 智谱 > OpenAI）
+ */
+function getAiClient(): { client: OpenAI; model: string } | null {
+  if (process.env.DEEPSEEK_API_KEY) {
+    return {
+      client: new OpenAI({ apiKey: process.env.DEEPSEEK_API_KEY, baseURL: "https://api.deepseek.com" }),
+      model: "deepseek-chat",
+    };
+  }
+  if (process.env.DASHSCOPE_API_KEY) {
+    return {
+      client: new OpenAI({ apiKey: process.env.DASHSCOPE_API_KEY, baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1" }),
+      model: "qwen-plus",
+    };
+  }
+  if (process.env.ZHIPU_API_KEY) {
+    return {
+      client: new OpenAI({ apiKey: process.env.ZHIPU_API_KEY, baseURL: "https://open.bigmodel.cn/api/paas/v4" }),
+      model: "glm-4-flash",
+    };
+  }
+  if (process.env.OPENAI_API_KEY) {
+    return { client: new OpenAI({ apiKey: process.env.OPENAI_API_KEY }), model: "gpt-4o-mini" };
+  }
+  return null;
+}
+
+/**
+ * 用 LLM 决策策略，失败时 fallback 到规则引擎
+ */
+export async function selectStrategyWithAI(
+  candles: Candle[],
+  mode: AiMode,
+  symbol: string,
+): Promise<{ code: string; params: Record<string, number>; reason: string; usedAI: boolean }> {
+  const config = AI_MODE_CONFIG[mode];
+  const market = analyzeMarket(candles);
+  const ai = getAiClient();
+
+  if (!ai) {
+    // 没有配置任何 AI key，直接用规则引擎
+    return { ...selectStrategy(candles, mode), usedAI: false };
+  }
+
+  // 构造给 LLM 的市场摘要
+  const n = candles.length;
+  const last = candles[n - 1]!;
+  const prev5 = candles.slice(-6, -1).map(c => c.close);
+  const pct5 = prev5.length > 0 ? ((last.close - prev5[0]!) / prev5[0]! * 100).toFixed(2) : "N/A";
+  const candidateList = config.strategies.map(s => `- ${s.code}（参数：${JSON.stringify(s.params)}）`).join("\n");
+
+  const prompt = `你是一个量化交易策略选择专家。请根据以下市场数据，从候选策略中选出最适合当前行情的一个策略。
+
+## 市场数据
+- 交易对：${symbol}
+- 周期：${config.label}（${config.interval} K线）
+- 当前价格：${last.close}
+- 近5根K线涨跌幅：${pct5}%
+- 相对波动率（ATR/价格）：${(market.volatility * 100).toFixed(3)}%
+- 趋势强度：${(market.trendStrength * 100).toFixed(3)}%
+- 市场状态：${market.isTrending ? (market.isUptrend ? "上升趋势" : "下降趋势") : "震荡行情"}
+
+## 候选策略
+${candidateList}
+
+## 要求
+只返回 JSON，格式如下，不要有任何其他文字：
+{"code":"策略code","reason":"选择理由，50字以内"}`;
+
+  try {
+    const resp = await ai.client.chat.completions.create({
+      model: ai.model,
+      messages: [{ role: "user", content: prompt }],
+      max_tokens: 200,
+      temperature: 0.3,
+    });
+
+    const text = resp.choices[0]?.message?.content?.trim() ?? "";
+    // 提取 JSON（防止模型多输出文字）
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error("no json");
+
+    const parsed = JSON.parse(jsonMatch[0]) as { code: string; reason: string };
+    const matched = config.strategies.find(s => s.code === parsed.code);
+    if (!matched) throw new Error(`unknown code: ${parsed.code}`);
+
+    return { code: matched.code, params: matched.params, reason: `[AI] ${parsed.reason}`, usedAI: true };
+  } catch {
+    // AI 调用失败，fallback 到规则引擎
+    const fallback = selectStrategy(candles, mode);
+    return { ...fallback, reason: `[规则] ${fallback.reason}`, usedAI: false };
+  }
 }

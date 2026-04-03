@@ -85,6 +85,7 @@ model Backtest {
   symbol       String
   strategyCode String   @map("strategy_code") // 策略标识
   params       String   @default("{}") // JSON 字符串，策略参数
+  interval     String   @default("1d") @map("interval") // K线周期
   startDate    String   @map("start_date") // YYYY-MM-DD
   endDate      String   @map("end_date")
   initCapital  Float    @default(100000) @map("init_capital")
@@ -171,6 +172,7 @@ model CryptoBot {
   interval     String        @default("1d") // K线周期
   quoteQty     Float         @map("quote_qty") // 每次买入 USDT 金额
   status       String        @default("stopped") // running | stopped
+  paperMode    Boolean       @default(false) @map("paper_mode") // 模拟交易模式
   aiMode       String?       @map("ai_mode") // short | medium | long | null(手动)
   inPosition   Boolean       @default(false) @map("in_position")
   entryPrice   Float?        @map("entry_price")
