@@ -169,6 +169,119 @@ async function fetchEastMoneyQuotes(symbols: string[]): Promise<QuoteItem[]> {
   }
 }
 
+export type Candle = {
+  time: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+};
+
+// 判断是否为海外股票（非A股）
+export function isOverseasSymbol(symbol: string): boolean {
+  const s = symbol.toLowerCase();
+  if (s.startsWith("sh") || s.startsWith("sz")) return false;
+  if (/^\d{6}$/.test(symbol)) return false;
+  return true;
+}
+
+// Yahoo Finance K线数据（用于海外股票）
+export async function fetchYahooKline(
+  symbol: string,
+  startDate: string,
+  endDate: string,
+): Promise<Candle[]> {
+  const start = Math.floor(new Date(startDate).getTime() / 1000);
+  const end = Math.floor(new Date(endDate).getTime() / 1000);
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&period1=${start}&period2=${end}&events=history`;
+
+  const res = await fetch(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0",
+      Accept: "application/json",
+    },
+    next: { revalidate: 300 },
+  });
+
+  if (!res.ok) throw new Error(`Yahoo Finance 请求失败: ${res.status}`);
+
+  const json = await res.json() as {
+    chart: {
+      result?: {
+        timestamp: number[];
+        indicators: {
+          quote: { open: number[]; high: number[]; low: number[]; close: number[]; volume: number[] }[];
+        };
+      }[];
+      error?: { description: string };
+    };
+  };
+
+  if (json.chart.error) throw new Error(json.chart.error.description);
+  const result = json.chart.result?.[0];
+  if (!result) return [];
+
+  const { timestamp, indicators } = result;
+  const quote = indicators.quote[0];
+  if (!quote) return [];
+
+  return timestamp
+    .map((ts, i) => ({
+      time: new Date(ts * 1000).toISOString().slice(0, 10),
+      open: quote.open[i] ?? 0,
+      high: quote.high[i] ?? 0,
+      low: quote.low[i] ?? 0,
+      close: quote.close[i] ?? 0,
+      volume: quote.volume[i] ?? 0,
+    }))
+    .filter((c) => c.open > 0 && c.close > 0);
+}
+
+// Yahoo Finance K线（不限日期，获取最近 N 条）
+export async function fetchYahooKlineRecent(symbol: string, datalen = 300): Promise<Candle[]> {
+  const end = Math.floor(Date.now() / 1000);
+  // 多取一些天数以保证足够数据（交易日约为自然日的 70%）
+  const start = end - Math.ceil(datalen / 0.7) * 86400;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&period1=${start}&period2=${end}&events=history`;
+
+  const res = await fetch(url, {
+    headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" },
+    next: { revalidate: 300 },
+  });
+
+  if (!res.ok) return [];
+
+  const json = await res.json() as {
+    chart: {
+      result?: {
+        timestamp: number[];
+        indicators: {
+          quote: { open: number[]; high: number[]; low: number[]; close: number[]; volume: number[] }[];
+        };
+      }[];
+    };
+  };
+
+  const result = json.chart.result?.[0];
+  if (!result) return [];
+  const { timestamp, indicators } = result;
+  const quote = indicators.quote[0];
+  if (!quote) return [];
+
+  return timestamp
+    .map((ts, i) => ({
+      time: new Date(ts * 1000).toISOString().slice(0, 10),
+      open: quote.open[i] ?? 0,
+      high: quote.high[i] ?? 0,
+      low: quote.low[i] ?? 0,
+      close: quote.close[i] ?? 0,
+      volume: quote.volume[i] ?? 0,
+    }))
+    .filter((c) => c.open > 0 && c.close > 0)
+    .slice(-datalen);
+}
+
 export async function fetchYahooQuotes(symbols: string[]): Promise<QuoteItem[]> {
   const emSymbols = symbols.filter((s) => s in EASTMONEY_SYMBOL_MAP);
   const hfFxSymbols = symbols.filter((s) => isHfSymbol(s) || isFxSymbol(s));

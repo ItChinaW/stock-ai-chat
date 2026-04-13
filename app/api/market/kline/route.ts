@@ -1,4 +1,4 @@
-import { toSinaSymbol } from "@/lib/market";
+import { isOverseasSymbol, toSinaSymbol, fetchYahooKlineRecent } from "@/lib/market";
 import { NextRequest, NextResponse } from "next/server";
 
 // 新浪 K 线接口
@@ -14,6 +14,16 @@ export async function GET(request: NextRequest) {
   const symbol = request.nextUrl.searchParams.get("symbol") ?? "";
   const period = request.nextUrl.searchParams.get("period") ?? "day";
   if (!symbol) return NextResponse.json({ error: "symbol required" }, { status: 400 });
+
+  // 海外股票走 Yahoo Finance
+  if (isOverseasSymbol(symbol) && period === "day") {
+    try {
+      const candles = await fetchYahooKlineRecent(symbol, 90);
+      return NextResponse.json(candles);
+    } catch {
+      return NextResponse.json([]);
+    }
+  }
 
   const cfg = PERIOD_MAP[period] ?? PERIOD_MAP.day!;
   const sinaSymbol = toSinaSymbol(symbol);

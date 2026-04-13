@@ -1,8 +1,12 @@
 import { runEngine, STRATEGY_DEFS } from "@/lib/backtest-engine";
-import { toSinaSymbol } from "@/lib/market";
+import { isOverseasSymbol, toSinaSymbol, fetchYahooKline } from "@/lib/market";
 import { NextRequest, NextResponse } from "next/server";
 
 async function fetchCandles(symbol: string, startDate: string, endDate: string) {
+  if (isOverseasSymbol(symbol)) {
+    return fetchYahooKline(symbol, startDate, endDate);
+  }
+
   const sinaSymbol = toSinaSymbol(symbol);
   const url = `https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol=${sinaSymbol}&scale=240&ma=no&datalen=1000`;
   const res = await fetch(url, { headers: { Referer: "https://finance.sina.com.cn" } });

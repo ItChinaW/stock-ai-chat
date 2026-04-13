@@ -1,9 +1,14 @@
 import { runEngine } from "@/lib/backtest-engine";
-import { toSinaSymbol } from "@/lib/market";
+import { isOverseasSymbol, toSinaSymbol, fetchYahooKline } from "@/lib/market";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 
 async function fetchDailyCandles(symbol: string, startDate: string, endDate: string) {
+  // 海外股票走 Yahoo Finance
+  if (isOverseasSymbol(symbol)) {
+    return fetchYahooKline(symbol, startDate, endDate);
+  }
+
   const sinaSymbol = toSinaSymbol(symbol);
   const url = `https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol=${sinaSymbol}&scale=240&ma=no&datalen=1000`;
 
