@@ -425,6 +425,68 @@ export function genCryptoSignals(candles: Candle[], code: string, p: BacktestPar
       // 死叉 + 价格在长期均线下方（空头市场）
       else if (f < s && pf >= ps && closes[i]! < t) sig[i] = -1;
     }
+
+  } else if (code === "ultra_breakout") {
+    // 超短趋势突破（改良海龟，合约版）
+    // 入场：突破近 N 根K线最高点（做多）或最低点（做空）
+    // 成交量确认：当前成交量 > 均量 * volMult
+    // 止损：固定百分比 stopPct（默认 0.5%）
+    // 止盈：固定百分比 tpPct（默认 1.5%）
+    // direction: 1=只做多, -1=只做空, 0=双向（默认）
+    const N = p.entryPeriod ?? 10;
+    const volMult = p.volMult ?? 1.3;
+    const stopPct = (p.stopPct ?? 0.5) / 100;
+    const tpPct = (p.tpPct ?? 1.5) / 100;
+    const direction = p.direction ?? 0; // 0=双向
+    const volumes = candles.map(c => c.volume);
+    const volMa = sma(volumes, N);
+
+    // 状态机：跟踪当前持仓方向和入场价
+    let posDir = 0; // 1=多仓 -1=空仓 0=空
+    let entryPx = 0;
+
+    for (let i = N; i < n; i++) {
+      const price = closes[i]!;
+      const vm = volMa[i];
+      if (vm == null) continue;
+      const volOk = volumes[i]! > vm * volMult;
+
+      if (posDir !== 0) {
+        // 持仓中：检查止损/止盈
+        if (posDir === 1) {
+          // 多仓止损/止盈
+          if (price <= entryPx * (1 - stopPct) || price >= entryPx * (1 + tpPct)) {
+            sig[i] = -1; // 平多
+            posDir = 0;
+          }
+        } else {
+          // 空仓止损/止盈（信号 1 表示平空）
+          if (price >= entryPx * (1 + stopPct) || price <= entryPx * (1 - tpPct)) {
+            sig[i] = 1; // 平空
+            posDir = 0;
+          }
+        }
+      }
+
+      if (posDir === 0) {
+        const prevCandles = candles.slice(i - N, i);
+        const highestHigh = Math.max(...prevCandles.map(c => c.high));
+        const lowestLow = Math.min(...prevCandles.map(c => c.low));
+
+        // 向上突破 → 做多
+        if ((direction === 0 || direction === 1) && price > highestHigh && volOk) {
+          sig[i] = 1;
+          posDir = 1;
+          entryPx = price;
+        }
+        // 向下突破 → 做空
+        else if ((direction === 0 || direction === -1) && price < lowestLow && volOk) {
+          sig[i] = -1;
+          posDir = -1;
+          entryPx = price;
+        }
+      }
+    }
   }
 
   return sig;
@@ -568,6 +630,18 @@ export const CRYPTO_STRATEGY_DEFS: StrategyDef[] = [
       { key: "trendPeriod", label: "趋势过滤周期", default: 55 },
       { key: "adxPeriod", label: "ADX周期", default: 14 },
       { key: "adxThreshold", label: "ADX趋势阈值", default: 20 },
+    ],
+  },
+  {
+    code: "ultra_breakout",
+    label: "⚡ 超短趋势突破（合约版）",
+    desc: "改良海龟系统，专为 1m/5m/15m 合约短线设计。突破近N根K线高/低点 + 成交量放大确认入场，固定止损（0.3%~0.8%）+ 固定止盈（1%~2%），支持做多/做空/双向。适合 20x 杠杆短线爆发行情。",
+    params: [
+      { key: "entryPeriod", label: "突破回看K线数N", default: 10 },
+      { key: "volMult", label: "成交量放大倍数", default: 1.3 },
+      { key: "stopPct", label: "止损比例(%)", default: 0.5 },
+      { key: "tpPct", label: "止盈比例(%)", default: 1.5 },
+      { key: "direction", label: "方向(0=双向,1=只多,-1=只空)", default: 0 },
     ],
   },
 ];

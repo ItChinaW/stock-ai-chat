@@ -14,6 +14,7 @@ import ReactMarkdown from "react-markdown";
 
 const DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"];
 const INTERVALS = [
+  { value: "1m", label: "1分钟" }, { value: "5m", label: "5分钟" },
   { value: "15m", label: "15分钟" }, { value: "1h", label: "1小时" },
   { value: "4h", label: "4小时" }, { value: "1d", label: "日线" },
 ];
@@ -28,8 +29,8 @@ const MODELS = [
 ];
 
 type Ticker = { price: number; change: number; changePct: number };
-type Trade = { id: number; side: string; price: number; qty: number; quoteQty: number; pnl: number | null; pnlPct: number | null; createdAt: string };
-type Bot = { id: number; symbol: string; strategyCode: string; params: string; interval: string; quoteQty: number; status: string; paperMode: boolean; aiMode: string | null; inPosition: boolean; entryPrice: number | null; entryDate: string | null; lastChecked: string | null; createdAt: string; trades: Trade[] };
+type Trade = { id: number; side: string; price: number; qty: number; quoteQty: number; pnl: number | null; pnlPct: number | null; leverage: number; createdAt: string };
+type Bot = { id: number; symbol: string; strategyCode: string; params: string; interval: string; quoteQty: number; status: string; paperMode: boolean; aiMode: string | null; leverage: number; direction: number; stopLossPct: number; takeProfitPct: number; positionSide: string; inPosition: boolean; entryPrice: number | null; entryDate: string | null; lastChecked: string | null; createdAt: string; trades: Trade[] };
 type Balance = { asset: string; free: number; locked: number };
 type BacktestRecord = { id: number; name: string; symbol: string; strategyCode: string; params: string; interval: string; startDate: string; endDate: string; initCapital: number; mode: string; totalReturn: number | null; totalPnl: number | null; annualReturn: number | null; maxDrawdown: number | null; tradeCount: number | null; winRate: number | null; sharpe: number | null; sortino: number | null; calmar: number | null; avgHoldDays: number | null; avgWin: number | null; avgLoss: number | null; profitFactor: number | null; equityCurve: string | null; trades: string | null; status: string; errorMsg: string | null; createdAt: string };
 
@@ -319,6 +320,8 @@ function BacktestTab() {
   const [endDate, setEndDate] = useState(today);
   const [initCapital, setInitCapital] = useState("10000");
   const [mode, setMode] = useState<"simple" | "compound">("compound");
+  const [leverage, setBtLeverage] = useState("1");
+  const [direction, setBtDirection] = useState("1");
   const [params, setParams] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -368,6 +371,9 @@ function BacktestTab() {
     try {
       const numParams: Record<string, number> = { atrPeriod: 14, atrMult: 2 };
       Object.entries(params).forEach(([k, v]) => { numParams[k] = Number(v); });
+      // 合约参数注入
+      numParams.__leverage = Number(leverage);
+      numParams.__direction = Number(direction);
       const res = await fetch("/api/crypto/backtest", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ symbol: symbol.trim().toUpperCase(), strategyCode, params: numParams, interval, startDate, endDate, initCapital: Number(initCapital), mode }),
@@ -465,6 +471,31 @@ function BacktestTab() {
                 {m === "simple" ? "单利" : "复利"}
               </label>
             ))}
+          </div>
+          {/* 合约参数 */}
+          <div className="rounded-xl border border-zinc-200 p-3 flex flex-col gap-2">
+            <p className="text-xs font-medium text-zinc-600">合约参数</p>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <p className="text-xs text-zinc-500 mb-1">杠杆倍数</p>
+                <select value={leverage} onChange={e => setBtLeverage(e.target.value)} className="w-full rounded-lg border border-zinc-200 px-2 py-1.5 text-sm outline-none">
+                  {[1,2,3,5,10,20,50,100].map(v => <option key={v} value={v}>{v}x{v===1?" (现货)":""}</option>)}
+                </select>
+              </div>
+              <div>
+                <p className="text-xs text-zinc-500 mb-1">方向</p>
+                <select value={direction} onChange={e => setBtDirection(e.target.value)} className="w-full rounded-lg border border-zinc-200 px-2 py-1.5 text-sm outline-none">
+                  <option value="1">只做多 ↑</option>
+                  <option value="0">双向</option>
+                  <option value="-1">只做空 ↓</option>
+                </select>
+              </div>
+            </div>
+            {Number(leverage) > 1 && (
+              <p className="text-xs text-amber-600 bg-amber-50 rounded-lg px-2 py-1.5">
+                ⚡ {leverage}x 杠杆，盈亏放大 {leverage} 倍
+              </p>
+            )}
           </div>
           <button type="button" onClick={() => void handleSubmit()} disabled={submitting || !symbol.trim()}
             className="flex items-center justify-center gap-2 rounded-xl bg-zinc-900 py-2.5 text-sm font-medium text-white hover:bg-zinc-700 disabled:opacity-40">
@@ -942,14 +973,30 @@ function NewBotModal({ open, onClose, onCreated }: { open: boolean; onClose: () 
   const [quoteQty, setQuoteQty] = useState("100");
   const [params, setParams] = useState<Record<string, string>>({});
   const [paperMode, setPaperMode] = useState(true);
+  // 合约参数
+  const [leverage, setLeverage] = useState("1");
+  const [direction, setDirection] = useState("1");
+  const [stopLossPct, setStopLossPct] = useState("0.5");
+  const [takeProfitPct, setTakeProfitPct] = useState("1.5");
   const [loading, setLoading] = useState(false);
 
   const strategy = ALL_CRYPTO_STRATEGIES.find(s => s.code === strategyCode) ?? ALL_CRYPTO_STRATEGIES[0]!;
+  const isContract = Number(leverage) > 1;
 
   useEffect(() => {
     const d: Record<string, string> = {};
     strategy.params.forEach(p => { d[p.key] = String(p.default); });
     setParams(d);
+  }, [strategyCode]);
+
+  // 选择超短突破策略时自动切换到短周期和合约参数
+  useEffect(() => {
+    if (strategyCode === "ultra_breakout") {
+      setInterval_("5m");
+      setLeverage("20");
+      setStopLossPct("0.5");
+      setTakeProfitPct("1.5");
+    }
   }, [strategyCode]);
 
   const AI_MODES = [
@@ -960,9 +1007,10 @@ function NewBotModal({ open, onClose, onCreated }: { open: boolean; onClose: () 
 
   async function handleCreate() {
     setLoading(true);
+    const contractFields = { leverage: Number(leverage), direction: Number(direction), stopLossPct: Number(stopLossPct), takeProfitPct: Number(takeProfitPct) };
     const body = mode === "ai"
-      ? { symbol: symbol.toUpperCase(), aiMode, quoteQty: Number(quoteQty), paperMode }
-      : { symbol: symbol.toUpperCase(), strategyCode, params: Object.fromEntries(Object.entries(params).map(([k, v]) => [k, Number(v)])), interval, quoteQty: Number(quoteQty), paperMode };
+      ? { symbol: symbol.toUpperCase(), aiMode, quoteQty: Number(quoteQty), paperMode, ...contractFields }
+      : { symbol: symbol.toUpperCase(), strategyCode, params: Object.fromEntries(Object.entries(params).map(([k, v]) => [k, Number(v)])), interval, quoteQty: Number(quoteQty), paperMode, ...contractFields };
     await fetch("/api/crypto/bots", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     setLoading(false);
     onCreated();
@@ -972,7 +1020,7 @@ function NewBotModal({ open, onClose, onCreated }: { open: boolean; onClose: () 
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
-      <div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl" onClick={e => e.stopPropagation()}>
+      <div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
           <p className="font-semibold text-zinc-800">新建机器人</p>
           <button type="button" onClick={onClose}><X size={16} className="text-zinc-400" /></button>
@@ -1047,6 +1095,44 @@ function NewBotModal({ open, onClose, onCreated }: { open: boolean; onClose: () 
             <input type="number" value={quoteQty} onChange={e => setQuoteQty(e.target.value)} className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm outline-none" />
           </div>
 
+          {/* 合约参数 */}
+          <div className="rounded-xl border border-zinc-200 p-3 flex flex-col gap-2.5">
+            <p className="text-xs font-medium text-zinc-600">合约参数</p>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <p className="text-xs text-zinc-500 mb-1">杠杆倍数</p>
+                <select value={leverage} onChange={e => setLeverage(e.target.value)} className="w-full rounded-lg border border-zinc-200 px-2 py-1.5 text-sm outline-none">
+                  {[1, 2, 3, 5, 10, 20, 50, 100].map(v => <option key={v} value={v}>{v}x{v === 1 ? " (现货)" : ""}</option>)}
+                </select>
+              </div>
+              <div>
+                <p className="text-xs text-zinc-500 mb-1">方向</p>
+                <select value={direction} onChange={e => setDirection(e.target.value)} className="w-full rounded-lg border border-zinc-200 px-2 py-1.5 text-sm outline-none">
+                  <option value="1">只做多 ↑</option>
+                  <option value="0">双向（多+空）</option>
+                  <option value="-1">只做空 ↓</option>
+                </select>
+              </div>
+            </div>
+            {isContract && (
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <p className="text-xs text-zinc-500 mb-1">止损比例 (%)</p>
+                  <input type="number" step="0.1" value={stopLossPct} onChange={e => setStopLossPct(e.target.value)} className="w-full rounded-lg border border-zinc-200 px-2 py-1.5 text-sm outline-none" />
+                </div>
+                <div>
+                  <p className="text-xs text-zinc-500 mb-1">止盈比例 (%)</p>
+                  <input type="number" step="0.1" value={takeProfitPct} onChange={e => setTakeProfitPct(e.target.value)} className="w-full rounded-lg border border-zinc-200 px-2 py-1.5 text-sm outline-none" />
+                </div>
+              </div>
+            )}
+            {isContract && (
+              <p className="text-xs text-amber-600 bg-amber-50 rounded-lg px-2 py-1.5">
+                ⚡ {leverage}x 杠杆 · 止损 {stopLossPct}% → 实际亏损 {(Number(stopLossPct) * Number(leverage)).toFixed(1)}% · 止盈 {takeProfitPct}% → 实际盈利 {(Number(takeProfitPct) * Number(leverage)).toFixed(1)}%
+              </p>
+            )}
+          </div>
+
           {/* 模拟/真实切换 */}
           <div className="flex gap-1 rounded-xl bg-zinc-100 p-1">
             <button type="button" onClick={() => setPaperMode(true)}
@@ -1081,6 +1167,87 @@ export default function CryptoPage() {
   const [expandedBot, setExpandedBot] = useState<number | null>(null);
   const [checking, setChecking] = useState<number | null>(null);
   const [lastCheckResult, setLastCheckResult] = useState<Record<number, { action: string; reason?: string }>>({});
+  // SSE 实时事件通知
+  const [liveEvents, setLiveEvents] = useState<{ id: number; msg: string; color: string }[]>([]);
+
+  // 建立 SSE 连接，同时确保 scheduler 在运行
+  useEffect(() => {
+    // ping scheduler，dev 模式热重载后自动重启
+    void fetch("/api/crypto/scheduler-status").then(r => r.json()).then((s: { started: boolean; restarted?: boolean; lastRunAgo?: string }) => {
+      if (s.restarted) console.log("[crypto] scheduler 已重启");
+      else console.log(`[crypto] scheduler 运行中，上次执行: ${s.lastRunAgo}`);
+    });
+
+    const es = new EventSource("/api/crypto/events");
+    es.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data as string) as {
+          type?: string; botId?: number; symbol?: string;
+          action?: string; price?: number; pnl?: number; pnlPct?: number; leverage?: number;
+        };
+        // SSE 连接确认
+        if (data.type === "connected") {
+          console.log("%c[Bot] SSE 连接成功", "color:#6366f1;font-weight:bold");
+          return;
+        }
+
+        const sym = data.symbol ?? "";
+        const px = data.price ? `$${data.price.toFixed(data.price > 100 ? 2 : 4)}` : "";
+        const pnlStr = data.pnl != null ? ` 盈亏 ${data.pnl >= 0 ? "+" : ""}${data.pnl.toFixed(2)}` : "";
+        const lvStr = data.leverage && data.leverage > 1 ? ` ${data.leverage}x` : "";
+        const ts = new Date().toLocaleTimeString("zh-CN");
+
+        // hold：灰色小字，不触发通知
+        if (!data.action || data.action === "hold") {
+          console.log(`%c[${ts}] ${sym} 观望 @ ${px}`, "color:#a1a1aa;font-size:11px");
+          return;
+        }
+
+        // 交易操作：彩色背景突出
+        const styles: Record<string, string> = {
+          "buy-long":    "color:#fff;background:#16a34a;font-weight:bold;padding:2px 8px;border-radius:4px",
+          "sell-short":  "color:#fff;background:#dc2626;font-weight:bold;padding:2px 8px;border-radius:4px",
+          "close-long":  "color:#fff;background:#0284c7;font-weight:bold;padding:2px 8px;border-radius:4px",
+          "close-short": "color:#fff;background:#7c3aed;font-weight:bold;padding:2px 8px;border-radius:4px",
+          "buy":         "color:#fff;background:#16a34a;font-weight:bold;padding:2px 8px;border-radius:4px",
+          "sell":        "color:#fff;background:#dc2626;font-weight:bold;padding:2px 8px;border-radius:4px",
+        };
+        const labels: Record<string, string> = {
+          "buy-long": "▲ 开多", "sell-short": "▼ 开空",
+          "close-long": "● 平多", "close-short": "● 平空",
+          "buy": "▲ 买入", "sell": "▼ 卖出",
+        };
+        console.log(
+          `%c ${labels[data.action] ?? data.action} %c ${sym}${lvStr} @ ${px}${pnlStr}  [${ts}]`,
+          styles[data.action] ?? "color:#f59e0b;font-weight:bold",
+          "color:#374151"
+        );
+
+        // 刷新机器人列表
+        void qc.invalidateQueries({ queryKey: ["crypto-bots"] });
+
+        // 页面右下角通知
+        const actionMap: Record<string, { msg: string; color: string }> = {
+          "buy-long":    { msg: `📈 ${sym} 开多${lvStr} @ ${px}`, color: "text-emerald-600 bg-emerald-50 border-emerald-200" },
+          "sell-short":  { msg: `📉 ${sym} 开空${lvStr} @ ${px}`, color: "text-rose-600 bg-rose-50 border-rose-200" },
+          "close-long":  { msg: `✅ ${sym} 平多 @ ${px}${pnlStr}`, color: "text-blue-700 bg-blue-50 border-blue-200" },
+          "close-short": { msg: `✅ ${sym} 平空 @ ${px}${pnlStr}`, color: "text-violet-700 bg-violet-50 border-violet-200" },
+          "buy":         { msg: `📈 ${sym} 买入 @ ${px}`, color: "text-emerald-600 bg-emerald-50 border-emerald-200" },
+          "sell":        { msg: `📉 ${sym} 卖出 @ ${px}${pnlStr}`, color: "text-rose-600 bg-rose-50 border-rose-200" },
+        };
+        const info = actionMap[data.action];
+        if (!info) return;
+        const id = Date.now();
+        setLiveEvents(prev => [{ id, ...info }, ...prev].slice(0, 5));
+        setTimeout(() => setLiveEvents(prev => prev.filter(ev => ev.id !== id)), 5000);
+      } catch { /* ignore */ }
+    };
+    es.onerror = () => {
+      console.log("%c[Bot] SSE 断开，等待重连...", "color:#f59e0b;font-weight:bold");
+    };
+    return () => es.close();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const { data: tickers = {} } = useQuery<Record<string, { price: number; change: number; changePct: number }>>({
     queryKey: ["crypto-tickers"],
@@ -1153,6 +1320,16 @@ export default function CryptoPage() {
 
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 px-4 py-4 md:flex-row md:gap-6 md:py-6">
+      {/* SSE 实时通知 */}
+      {liveEvents.length > 0 && (
+        <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none">
+          {liveEvents.map(ev => (
+            <div key={ev.id} className={`rounded-xl border px-4 py-2.5 text-sm font-medium shadow-lg animate-in slide-in-from-right-4 ${ev.color}`}>
+              {ev.msg}
+            </div>
+          ))}
+        </div>
+      )}
       {/* 主内容区 */}
       <div className="flex-1 min-w-0 flex flex-col gap-4">
         {/* Tab 切换 */}
@@ -1198,7 +1375,11 @@ export default function CryptoPage() {
                   {bots.map(bot => {
                     const running = bot.status === "running";
                     const ticker = tickers[bot.symbol];
-                    const pnlPct = bot.inPosition && bot.entryPrice && ticker ? (ticker.price - bot.entryPrice) / bot.entryPrice * 100 : null;
+                    const pnlPct = bot.inPosition && bot.entryPrice && ticker
+                      ? bot.positionSide === "SHORT"
+                        ? (bot.entryPrice - ticker.price) / bot.entryPrice * 100 * (bot.leverage ?? 1)
+                        : (ticker.price - bot.entryPrice) / bot.entryPrice * 100 * (bot.leverage ?? 1)
+                      : null;
                     return (
                       <div key={bot.id} className="px-4 py-3">
                         <div className="flex items-center gap-3">
@@ -1208,6 +1389,9 @@ export default function CryptoPage() {
                               <span className="font-medium text-sm text-zinc-800">{bot.symbol}</span>
                               {bot.paperMode && (
                                 <span className="rounded-full bg-violet-100 px-2 py-0.5 text-xs font-medium text-violet-700">模拟</span>
+                              )}
+                              {bot.leverage > 1 && (
+                                <span className="rounded-full bg-orange-100 px-2 py-0.5 text-xs font-medium text-orange-700">{bot.leverage}x</span>
                               )}
                               {bot.aiMode ? (
                                 <span className="rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700">
@@ -1220,11 +1404,26 @@ export default function CryptoPage() {
                             <div className="flex items-center gap-3 mt-0.5 text-xs text-zinc-500">
                               {bot.inPosition ? (
                                 <>
-                                  <span className="text-emerald-600 font-medium">持仓中</span>
-                                  {bot.entryPrice && <span>成本 ${fmtN(bot.entryPrice, 4)}</span>}
+                                  <span className={`font-medium ${bot.positionSide === "SHORT" ? "text-rose-500" : "text-emerald-600"}`}>
+                                    {bot.positionSide === "SHORT" ? "空仓中" : "多仓中"}
+                                  </span>
+                                  {bot.entryPrice && <span>买入价 ${fmtN(bot.entryPrice, 4)}</span>}
                                   {pnlPct != null && <span className={pnlPct >= 0 ? "text-emerald-600" : "text-rose-500"}>{fmtPct(pnlPct)}</span>}
                                 </>
                               ) : <span>空仓</span>}
+                              {(() => {
+                                const closedPnl = bot.trades.filter(t => t.pnl != null).reduce((s, t) => s + (t.pnl ?? 0), 0);
+                                const floatPnl = bot.inPosition && bot.entryPrice && ticker && pnlPct != null
+                                  ? bot.quoteQty * pnlPct / 100
+                                  : 0;
+                                const total = bot.quoteQty + closedPnl + floatPnl;
+                                const totalPct = (closedPnl + floatPnl) / bot.quoteQty * 100;
+                                return (
+                                  <span className={`ml-1 font-medium ${totalPct >= 0 ? "text-emerald-600" : "text-rose-500"}`}>
+                                    总 ${fmtN(total)} ({totalPct >= 0 ? "+" : ""}{totalPct.toFixed(1)}%)
+                                  </span>
+                                );
+                              })()}
                               {bot.lastChecked && <span>检查 {new Date(bot.lastChecked).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>}
                             </div>
                             {lastCheckResult[bot.id] && (
@@ -1265,16 +1464,30 @@ export default function CryptoPage() {
                           <div className="mt-3 rounded-xl bg-zinc-50 p-3">
                             <p className="text-xs text-zinc-400 mb-2">最近交易记录</p>
                             <div className="flex flex-col gap-1">
-                              {bot.trades.map(t => (
-                                <div key={t.id} className="flex items-center justify-between text-xs">
-                                  <span className={`font-medium w-8 ${t.side === "BUY" ? "text-emerald-600" : "text-rose-500"}`}>{t.side === "BUY" ? "买" : "卖"}</span>
-                                  <span className="text-zinc-600">${fmtN(t.price, 4)}</span>
-                                  <span className="text-zinc-500">{fmtN(t.qty, 4)}</span>
-                                  <span className="text-zinc-500">${fmtN(t.quoteQty, 2)}</span>
-                                  {t.pnl != null && <span className={t.pnl >= 0 ? "text-emerald-600" : "text-rose-500"}>{fmt(t.pnl)} ({fmt(t.pnlPct, true)})</span>}
-                                  <span className="text-zinc-400">{new Date(t.createdAt).toLocaleDateString("zh-CN")}</span>
-                                </div>
-                              ))}
+                              {bot.trades.map(t => {
+                                const sideLabel =
+                                  t.side === "BUY" ? { text: "开多", cls: "text-emerald-600" } :
+                                  t.side === "SELL" ? { text: "平多", cls: "text-rose-500" } :
+                                  t.side === "SHORT_OPEN" ? { text: "开空", cls: "text-rose-500" } :
+                                  t.side === "SHORT_CLOSE" ? { text: "平空", cls: "text-emerald-600" } :
+                                  { text: t.side, cls: "text-zinc-500" };
+                                return (
+                                  <div key={t.id} className="flex items-center gap-2 text-xs py-0.5 border-b border-zinc-100 last:border-0">
+                                    <span className={`font-semibold w-10 shrink-0 ${sideLabel.cls}`}>{sideLabel.text}</span>
+                                    {t.leverage > 1 && <span className="rounded bg-orange-100 px-1 text-orange-600 shrink-0">{t.leverage}x</span>}
+                                    <span className="text-zinc-600 shrink-0">${fmtN(t.price, 4)}</span>
+                                    <span className="text-zinc-400 shrink-0">{fmtN(t.qty, 4)}</span>
+                                    <span className="text-zinc-400 shrink-0">${fmtN(t.quoteQty, 2)}</span>
+                                    {t.pnl != null
+                                      ? <span className={`ml-auto font-medium shrink-0 ${t.pnl >= 0 ? "text-emerald-600" : "text-rose-500"}`}>
+                                          {t.pnl >= 0 ? "+" : ""}{t.pnl.toFixed(2)} ({t.pnlPct != null ? `${(t.pnlPct * 100).toFixed(1)}%` : "-"})
+                                        </span>
+                                      : <span className="ml-auto text-zinc-300 shrink-0">-</span>
+                                    }
+                                    <span className="text-zinc-400 shrink-0">{new Date(t.createdAt).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
+                                  </div>
+                                );
+                              })}
                             </div>
                           </div>
                         )}

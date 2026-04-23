@@ -17,8 +17,13 @@ export async function POST(req: NextRequest) {
     aiMode?: AiMode;
     strategyCode?: string;
     params?: Record<string, number>;
+    interval?: string;
     quoteQty: number;
     paperMode?: boolean;
+    leverage?: number;
+    direction?: number;
+    stopLossPct?: number;
+    takeProfitPct?: number;
   };
 
   const aiMode = body.aiMode ?? null;
@@ -30,11 +35,16 @@ export async function POST(req: NextRequest) {
       symbol: body.symbol.toUpperCase(),
       strategyCode: modeConfig ? modeConfig.strategies[0]!.code : (body.strategyCode ?? "ma_cross"),
       params: JSON.stringify(modeConfig ? modeConfig.strategies[0]!.params : (body.params ?? {})),
-      interval: modeConfig ? modeConfig.interval : "1d",
+      interval: modeConfig ? modeConfig.interval : (body.interval ?? "1d"),
       quoteQty: body.quoteQty,
       status: "stopped",
       aiMode,
       paperMode: body.paperMode ?? false,
+      leverage: body.leverage ?? 1,
+      direction: body.direction ?? 0,
+      stopLossPct: body.stopLossPct ?? 0.5,
+      takeProfitPct: body.takeProfitPct ?? 1.5,
+      positionSide: "NONE",
     },
   });
   return NextResponse.json(bot, { status: 201 });

@@ -1,0 +1,9 @@
+-- AlterTable
+ALTER TABLE `crypto_bots` ADD COLUMN `direction` INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN `leverage` INTEGER NOT NULL DEFAULT 1,
+    ADD COLUMN `position_side` VARCHAR(191) NOT NULL DEFAULT 'NONE',
+    ADD COLUMN `stop_loss_pct` DOUBLE NOT NULL DEFAULT 0.5,
+    ADD COLUMN `take_profit_pct` DOUBLE NOT NULL DEFAULT 1.5;
+
+-- AlterTable
+ALTER TABLE `crypto_trades` ADD COLUMN `leverage` INTEGER NOT NULL DEFAULT 1;

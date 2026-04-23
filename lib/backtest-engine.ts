@@ -221,7 +221,7 @@ export const STRATEGY_DEFS: StrategyDef[] = [
 
 function genSignals(candles: Candle[], code: string, p: BacktestParams): (1 | -1 | 0)[] {
   // 路由到币圈专用策略
-  const cryptoCodes = ["turtle_crypto", "supertrend", "vwap_revert", "ema_ribbon", "rsi_divergence", "bb_squeeze", "funding_arb", "ichimoku_cloud", "heikin_ashi_trend", "scalping_ema", "stoch_rsi", "macd_scalp", "breakout_scalp"];
+  const cryptoCodes = ["turtle_crypto", "supertrend", "vwap_revert", "ema_ribbon", "rsi_divergence", "bb_squeeze", "funding_arb", "ichimoku_cloud", "heikin_ashi_trend", "scalping_ema", "stoch_rsi", "macd_scalp", "breakout_scalp", "intraday_trend", "ultra_breakout"];
   if (cryptoCodes.includes(code)) {
     return genCryptoSignals(candles, code, p);
   }
@@ -628,9 +628,19 @@ export function runEngine(
     return runTurtle(candles, params, initCapital, mode);
   }
 
+  // 合约参数（通过 params 传入，前缀 __ 避免与策略参数冲突）
+  const leverage = params.__leverage ?? 1;
+  const direction = params.__direction ?? 1; // 1=只多 -1=只空 0=双向
+
   const n = candles.length;
   const closes = candles.map(c => c.close);
-  const signals = genSignals(candles, strategyCode, params);
+  let signals = genSignals(candles, strategyCode, params);
+
+  // 方向过滤：只做空时把买入信号(-1)当入场，卖出信号(1)当平仓
+  if (direction === -1) {
+    signals = signals.map(s => s === 1 ? -1 : s === -1 ? 1 : 0) as (1 | -1 | 0)[];
+  }
+
   const atrVals = atrArr(candles, params.atrPeriod ?? 14);
   const atrMult = params.atrMult ?? 2;
 
@@ -643,20 +653,25 @@ export function runEngine(
   for (let i = 1; i < n; i++) {
     const price = closes[i]!, c = candles[i]!;
     if (inPosition) {
-      const hitStop = c.low <= stopLoss, exitSig = signals[i] === -1;
+      const hitStop = direction !== -1 ? c.low <= stopLoss : c.high >= stopLoss;
+      const exitSig = signals[i] === -1;
       if (hitStop || exitSig) {
-        const exitPrice = hitStop ? Math.min(stopLoss, price) : price;
+        const exitPrice = hitStop ? (direction !== -1 ? Math.min(stopLoss, price) : Math.max(stopLoss, price)) : price;
+        const rawPnlPct = direction !== -1
+          ? exitPrice / entryPrice - 1
+          : entryPrice / exitPrice - 1;
         const pnl = mode === "compound"
-          ? (exitPrice / entryPrice - 1) * capital
-          : (exitPrice - entryPrice) * shares;
-        trades.push({ entryDate, exitDate: c.time, entryPrice, exitPrice, pnl, pnlPct: exitPrice / entryPrice - 1 });
+          ? rawPnlPct * leverage * capital
+          : rawPnlPct * leverage * (shares * entryPrice);
+        trades.push({ entryDate, exitDate: c.time, entryPrice, exitPrice, pnl, pnlPct: rawPnlPct * leverage });
         capital += pnl; inPosition = false;
       }
     }
     if (!inPosition && signals[i] === 1) {
       entryPrice = price; entryDate = c.time;
       const a = atrVals[i] ?? price * 0.02;
-      stopLoss = entryPrice - a * atrMult;
+      // 做空时止损在上方
+      stopLoss = direction !== -1 ? entryPrice - a * atrMult : entryPrice + a * atrMult;
       const base = mode === "simple" ? initCapital : capital;
       shares = Math.max(100, Math.floor(base / entryPrice / 100) * 100);
       inPosition = true;
@@ -670,10 +685,13 @@ export function runEngine(
 
   if (inPosition) {
     const last = candles[n - 1]!;
+    const rawPnlPct = direction !== -1
+      ? last.close / entryPrice - 1
+      : entryPrice / last.close - 1;
     const pnl = mode === "compound"
-      ? (last.close / entryPrice - 1) * capital
-      : (last.close - entryPrice) * shares;
-    trades.push({ entryDate, exitDate: last.time, entryPrice, exitPrice: last.close, pnl, pnlPct: last.close / entryPrice - 1 });
+      ? rawPnlPct * leverage * capital
+      : rawPnlPct * leverage * (shares * entryPrice);
+    trades.push({ entryDate, exitDate: last.time, entryPrice, exitPrice: last.close, pnl, pnlPct: rawPnlPct * leverage });
     capital += pnl; equity[equity.length - 1] = capital;
   }
 

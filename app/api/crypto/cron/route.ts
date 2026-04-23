@@ -8,13 +8,32 @@ export const maxDuration = 60;
 
 const CRON_SECRET = process.env.CRON_SECRET ?? "local-cron";
 
+// 合约字段类型扩展
+type BotWithContract = {
+  id: number; symbol: string; strategyCode: string; params: string;
+  interval: string; quoteQty: number; status: string;
+  paperMode: boolean; aiMode: string | null;
+  leverage: number; direction: number; stopLossPct: number; takeProfitPct: number;
+  positionSide: string;
+  inPosition: boolean; entryPrice: number | null; entryDate: string | null;
+  lastChecked: Date | null;
+};
+
 export async function GET(req: NextRequest) {
   const secret = req.nextUrl.searchParams.get("secret");
   if (secret !== CRON_SECRET) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
-  const bots = await prisma.cryptoBot.findMany({ where: { status: "running" } });
+  // interval 参数：只跑指定周期的机器人（1m/5m/15m/1h/4h/1d）
+  // 不传则跑所有
+  const intervalFilter = req.nextUrl.searchParams.get("interval");
+
+  const where = intervalFilter
+    ? { status: "running", interval: intervalFilter }
+    : { status: "running" };
+
+  const bots = await prisma.cryptoBot.findMany({ where }) as unknown as BotWithContract[];
   if (bots.length === 0) return NextResponse.json({ ok: true, checked: 0 });
 
   const results: {
@@ -23,8 +42,9 @@ export async function GET(req: NextRequest) {
   }[] = [];
 
   for (const bot of bots) {
-    // paperMode 字段在新版 schema 中存在，类型断言兼容旧版 Prisma Client 缓存
-    const paperMode = (bot as unknown as { paperMode: boolean }).paperMode ?? false;
+    const paperMode = bot.paperMode ?? false;
+    const leverage = bot.leverage ?? 1;
+    const isContract = leverage > 1; // 合约模式
     try {
       const candles = await getKlines(bot.symbol, bot.interval, 300);
       if (candles.length < 20) {
@@ -48,10 +68,95 @@ export async function GET(req: NextRequest) {
       }
 
       const signal = getLatestSignal(candles, strategyCode, params);
+      const price = signal.currentPrice;
       let action = "hold";
 
-      if (signal.signal === "buy" && !bot.inPosition) {
-        const price = signal.currentPrice;
+      // ── 合约模拟盘逻辑 ──────────────────────────────────
+      if (isContract && paperMode) {
+        const positionSide = bot.positionSide ?? "NONE";
+        const stopLossPct = (bot.stopLossPct ?? 0.5) / 100;
+        const takeProfitPct = (bot.takeProfitPct ?? 1.5) / 100;
+
+        if (positionSide === "LONG") {
+          // 持多仓：检查止损/止盈
+          const ep = bot.entryPrice!;
+          const pnlPct = (price - ep) / ep;
+          const shouldStop = pnlPct <= -stopLossPct || pnlPct >= takeProfitPct;
+          if (shouldStop || signal.signal === "sell") {
+            const pnl = (price - ep) / ep * bot.quoteQty * leverage;
+            const pnlPctFinal = (price - ep) / ep * leverage;
+            await prisma.cryptoTrade.create({
+              data: {
+                botId: bot.id, symbol: bot.symbol, side: "SELL",
+                price, qty: bot.quoteQty / ep, quoteQty: bot.quoteQty,
+                pnl, pnlPct: pnlPctFinal, leverage, orderId: "paper-contract",
+              },
+            });
+            await prisma.cryptoBot.update({
+              where: { id: bot.id },
+              data: { inPosition: false, entryPrice: null, entryDate: null, positionSide: "NONE", lastChecked: new Date() },
+            });
+            action = pnlPct >= takeProfitPct ? "tp" : "sl";
+          }
+        } else if (positionSide === "SHORT") {
+          // 持空仓：检查止损/止盈
+          const ep = bot.entryPrice!;
+          const pnlPct = (ep - price) / ep;
+          const shouldStop = pnlPct <= -stopLossPct || pnlPct >= takeProfitPct;
+          if (shouldStop || signal.signal === "buy") {
+            const pnl = (ep - price) / ep * bot.quoteQty * leverage;
+            const pnlPctFinal = (ep - price) / ep * leverage;
+            await prisma.cryptoTrade.create({
+              data: {
+                botId: bot.id, symbol: bot.symbol, side: "SHORT_CLOSE",
+                price, qty: bot.quoteQty / ep, quoteQty: bot.quoteQty,
+                pnl, pnlPct: pnlPctFinal, leverage, orderId: "paper-contract",
+              },
+            });
+            await prisma.cryptoBot.update({
+              where: { id: bot.id },
+              data: { inPosition: false, entryPrice: null, entryDate: null, positionSide: "NONE", lastChecked: new Date() },
+            });
+            action = pnlPct >= takeProfitPct ? "tp" : "sl";
+          }
+        } else {
+          // 空仓：检查开仓信号
+          const dir = bot.direction ?? 0;
+          if (signal.signal === "buy" && (dir === 0 || dir === 1)) {
+            // 开多
+            await prisma.cryptoTrade.create({
+              data: {
+                botId: bot.id, symbol: bot.symbol, side: "BUY",
+                price, qty: bot.quoteQty / price, quoteQty: bot.quoteQty,
+                leverage, orderId: "paper-contract",
+              },
+            });
+            await prisma.cryptoBot.update({
+              where: { id: bot.id },
+              data: { inPosition: true, entryPrice: price, entryDate: new Date().toISOString().slice(0, 10), positionSide: "LONG", lastChecked: new Date() },
+            });
+            action = "buy-long";
+          } else if (signal.signal === "sell" && (dir === 0 || dir === -1)) {
+            // 开空
+            await prisma.cryptoTrade.create({
+              data: {
+                botId: bot.id, symbol: bot.symbol, side: "SHORT_OPEN",
+                price, qty: bot.quoteQty / price, quoteQty: bot.quoteQty,
+                leverage, orderId: "paper-contract",
+              },
+            });
+            await prisma.cryptoBot.update({
+              where: { id: bot.id },
+              data: { inPosition: true, entryPrice: price, entryDate: new Date().toISOString().slice(0, 10), positionSide: "SHORT", lastChecked: new Date() },
+            });
+            action = "sell-short";
+          } else {
+            await prisma.cryptoBot.update({ where: { id: bot.id }, data: { lastChecked: new Date() } });
+          }
+        }
+
+      // ── 现货/普通模拟盘逻辑 ─────────────────────────────
+      } else if (signal.signal === "buy" && !bot.inPosition) {
         if (paperMode) {
           const qty = bot.quoteQty / price;
           await prisma.cryptoTrade.create({
@@ -72,14 +177,13 @@ export async function GET(req: NextRequest) {
         }
         await prisma.cryptoBot.update({
           where: { id: bot.id },
-          data: { inPosition: true, entryPrice: signal.currentPrice, entryDate: new Date().toISOString().slice(0, 10), lastChecked: new Date() },
+          data: { inPosition: true, entryPrice: price, entryDate: new Date().toISOString().slice(0, 10), lastChecked: new Date() },
         });
         action = "buy";
 
       } else if (signal.signal === "sell" && bot.inPosition) {
-        const price = signal.currentPrice;
-        const qty = bot.quoteQty / (bot.entryPrice ?? price);
         if (paperMode) {
+          const qty = bot.quoteQty / (bot.entryPrice ?? price);
           const pnl = bot.entryPrice ? (price - bot.entryPrice) * qty : null;
           const pnlPct = bot.entryPrice ? (price - bot.entryPrice) / bot.entryPrice : null;
           await prisma.cryptoTrade.create({
