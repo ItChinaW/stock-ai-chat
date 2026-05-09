@@ -1,49 +1,49 @@
-import { fetchYahooQuotes } from "@/lib/market";
+import { fetchYahooQuotes, fetchYahooQuotesV7 } from "@/lib/market";
 import { NextResponse } from "next/server";
 
-const TRACKED_INDICES = [
-  { key: "sse",     label: "上证指数",    symbol: "sh000001" },
-  { key: "szse",    label: "深证成指",    symbol: "sz399001" },
-  { key: "nasdaq",  label: "纳斯达克",    symbol: "gb_ixic" },
-  { key: "sp500",   label: "标普500",     symbol: "gb_inx" },
-  { key: "dji",     label: "道琼斯",      symbol: "gb_dji" },
-  { key: "hsi",     label: "恒生指数",    symbol: "hf_HSI" },
-  { key: "gold",    label: "纽约黄金",    symbol: "hf_GC" },
-  { key: "oil",     label: "纽约原油",    symbol: "hf_CL" },
-  { key: "gas",     label: "美国天然气",  symbol: "hf_NG" },
-  { key: "silver",  label: "纽约白银",    symbol: "hf_SI" },
-  { key: "usdcny",  label: "美元/人民币", symbol: "fx_susdcny" },
+// A股指数用新浪，海外用 Yahoo Finance
+const SINA_INDICES = [
+  { key: "sse",    label: "上证",   symbol: "sh000001" },
+  { key: "hs300",  label: "沪深300", symbol: "sh000300" },
+  { key: "bj50",   label: "北证50",  symbol: "bj899050" },
+  { key: "kc50",   label: "科创50",  symbol: "sh000688" },
+  { key: "cyb",    label: "创业板",  symbol: "sz399006" },
+  { key: "szse",   label: "深证",    symbol: "sz399001" },
+];
+
+const YAHOO_INDICES = [
+  { key: "ndx",  label: "纳指",     symbol: "^NDX"   },
+  { key: "n225", label: "日经225",  symbol: "^N225"  },
+  { key: "ks11", label: "韩国综合", symbol: "^KS11"  },
+  { key: "twii", label: "台湾加权", symbol: "^TWII"  },
+  { key: "hsi",  label: "恒生指数", symbol: "^HSI"   },
+  { key: "ftse", label: "英国富时", symbol: "^FTSE"  },
 ];
 
 export async function GET() {
   try {
-    const quotes = await fetchYahooQuotes(TRACKED_INDICES.map((item) => item.symbol));
-    const quoteMap = new Map(quotes.map((item) => [item.symbol, item]));
+    const [sinaResults, yahooResults] = await Promise.all([
+      fetchYahooQuotes(SINA_INDICES.map(i => i.symbol)),
+      fetchYahooQuotesV7(YAHOO_INDICES.map(i => i.symbol)),
+    ]);
 
-    const indices = TRACKED_INDICES.map((index) => {
-      const quote = quoteMap.get(index.symbol);
-      return {
-        ...index,
-        price: quote?.price ?? 0,
-        change: quote?.change ?? 0,
-        changePercent: quote?.changePercent ?? 0,
-        currency: quote?.currency ?? "USD",
-      };
-    });
+    const sinaMap = new Map(sinaResults.map(q => [q.symbol, q]));
+    const yahooMap = new Map(yahooResults.map(q => [q.symbol, q]));
 
-    return NextResponse.json({
-      updatedAt: new Date().toISOString(),
-      indices,
-    });
+    const indices = [
+      ...SINA_INDICES.map(idx => {
+        const q = sinaMap.get(idx.symbol);
+        return { ...idx, price: q?.price ?? 0, change: q?.change ?? 0, changePercent: q?.changePercent ?? 0, currency: "CNY" };
+      }),
+      ...YAHOO_INDICES.map(idx => {
+        const q = yahooMap.get(idx.symbol);
+        return { ...idx, price: q?.price ?? 0, change: q?.change ?? 0, changePercent: q?.changePercent ?? 0, currency: q?.currency ?? "USD" };
+      }),
+    ];
+
+    return NextResponse.json({ updatedAt: new Date().toISOString(), indices });
   } catch (error) {
     console.error("[indices] error:", error);
-    return NextResponse.json(
-      {
-        message: "Failed to fetch market indices",
-        error: error instanceof Error ? error.message : "Unknown error",
-        stack: error instanceof Error ? error.stack : undefined,
-      },
-      { status: 500 },
-    );
+    return NextResponse.json({ message: "Failed to fetch indices", error: String(error) }, { status: 500 });
   }
 }

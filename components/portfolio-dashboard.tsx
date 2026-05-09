@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleDollarSign, Eye, Pencil, Plus, Save, Trash2, Upload, Wallet, X } from "lucide-react";
+import { AlertTriangle, CircleDollarSign, Eye, Mail, Pencil, Plus, RefreshCw, Save, ShieldAlert, Trash2, Upload, Wallet, X } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import KlineTooltip from "./kline-tooltip";
@@ -12,6 +12,7 @@ type Position = {
   name: string;
   costPrice: number;
   amount: number;
+  strategy: string;
 };
 
 type Row = {
@@ -20,6 +21,7 @@ type Row = {
   name: string;
   costPrice: number;   // 持久化值（用于计算）
   amount: number;      // 持久化值（用于计算）
+  strategy: string;    // 策略标识（如 "turtle"）
   costPriceInput: string; // 编辑中间态
   amountInput: string;    // 编辑中间态
   isEditing: boolean;
@@ -58,6 +60,7 @@ function toRow(item: Position): Row {
     name: item.name ?? "",
     costPrice: item.costPrice,
     amount: item.amount,
+    strategy: item.strategy ?? "",
     costPriceInput: String(item.costPrice),
     amountInput: String(item.amount),
     isEditing: false,
@@ -138,7 +141,7 @@ export default function PortfolioDashboard({
 
   const saveMutation = useMutation({
     mutationFn: async (row: Row) => {
-      const payload = { code: row.code.trim().toUpperCase(), costPrice: row.costPrice, amount: row.amount };
+      const payload = { code: row.code.trim().toUpperCase(), costPrice: row.costPrice, amount: row.amount, strategy: row.strategy };
       const response = await fetch(row.id ? `/api/positions/${row.id}` : "/api/positions", {
         method: row.id ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
@@ -165,7 +168,7 @@ export default function PortfolioDashboard({
 
   function addRow() {
     const key = `new-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    setRows((prev) => [...prev, { id: null, code: "", name: "", costPrice: 0, amount: 0, costPriceInput: "", amountInput: "", isEditing: true, localKey: key }]);
+    setRows((prev) => [...prev, { id: null, code: "", name: "", costPrice: 0, amount: 0, strategy: "", costPriceInput: "", amountInput: "", isEditing: true, localKey: key }]);
   }
 
   async function removeRow(index: number) {
@@ -185,6 +188,17 @@ export default function PortfolioDashboard({
     updateRow(index, "isEditing", false);
   }
 
+  async function sendTestMail(rowId: number) {
+    try {
+      const res = await fetch(`/api/positions/${rowId}/test-mail`, { method: "POST" });
+      const data = await res.json() as { ok?: boolean; to?: string; error?: string };
+      if (data.ok) alert(`✅ 测试邮件已发送至 ${data.to ?? "(未配置 MAIL_TO)"}`);
+      else alert(`❌ 发送失败：${data.error ?? "未知错误"}`);
+    } catch (err) {
+      alert(`❌ 请求失败：${err instanceof Error ? err.message : "unknown"}`);
+    }
+  }
+
   function editRow(index: number) { updateRow(index, "isEditing", true); }
 
   function cancelEdit(index: number) {
@@ -200,6 +214,33 @@ export default function PortfolioDashboard({
     { title: "总盈亏", value: totals.totalPnl, icon: CircleDollarSign, tone: totals.totalPnl >= 0 ? "text-emerald-600" : "text-rose-600" },
     { title: "当日盈亏", value: totals.dayPnl, icon: CircleDollarSign, tone: totals.dayPnl >= 0 ? "text-emerald-600" : "text-rose-600" },
   ];
+
+  // ── 海龟策略监控（每3小时自动刷新）──────────────────────
+  type TurtleItem = {
+    id: number; code: string; name: string; costPrice: number; amount: number;
+    currentPrice: number; signal: string; inPosition: boolean;
+    entryPrice: number | null; stopLoss: number | null;
+    buyPrice: number | { low: number; high: number } | null;
+    unrealizedPnlPct: number | null; stopTriggered: boolean; error?: string;
+  };
+  const THREE_HOURS = 3 * 60 * 60 * 1000;
+  const { data: turtleData } = useQuery<{
+    items: TurtleItem[]; checkedAt: string; triggeredCount: number;
+  }>({
+    queryKey: ["turtle-monitor"],
+    queryFn: async () => { const r = await fetch("/api/positions/turtle-monitor"); return r.json(); },
+    refetchInterval: THREE_HOURS,
+    staleTime: THREE_HOURS,
+    enabled: rows.some((r) => r.strategy === "turtle"),
+  });
+
+  const turtleByCode = useMemo(() => {
+    const map = new Map<string, TurtleItem>();
+    turtleData?.items.forEach((it) => map.set(it.code.trim().toUpperCase(), it));
+    return map;
+  }, [turtleData]);
+
+  const fmtStop = (n: number | null): string => (n == null ? "-" : n.toFixed(3));
 
   return (
     <section className="flex w-full flex-col gap-4 md:gap-6">
@@ -247,15 +288,16 @@ export default function PortfolioDashboard({
 
         {/* 桌面端表格 */}
         <div className="hidden md:block overflow-x-auto">
-          <table className="w-full min-w-[780px] text-sm">
+          <table className="w-full min-w-[860px] text-sm">
             <thead>
               <tr className="border-b border-zinc-200 text-left text-zinc-500">
                 <th className="pb-2 w-32">代码</th>
-                <th className="pb-2 w-28">成本价</th>
-                <th className="pb-2 w-24">数量</th>
+                <th className="pb-2 w-24">成本价</th>
+                <th className="pb-2 w-20">数量</th>
                 <th className="pb-2 w-20">现价</th>
-                <th className="pb-2 w-36">浮动盈亏</th>
+                <th className="pb-2 w-32">浮动盈亏</th>
                 <th className="pb-2 w-28">总盈亏</th>
+                <th className="pb-2 w-24">止损价</th>
                 <th className="pb-2 text-right">操作</th>
               </tr>
             </thead>
@@ -272,16 +314,26 @@ export default function PortfolioDashboard({
                   <tr key={row.localKey} className="border-b border-zinc-100">
                     <td className="py-2 pr-2">
                       {row.isEditing ? (
-                        <input value={row.code} onChange={(e) => updateRow(index, "code", e.target.value)}
-                          className="w-full rounded-md border border-zinc-200 px-2 py-1 outline-none focus:border-zinc-400"
-                          placeholder="AAPL / 159941 / 600519.SS" />
+                        <div className="flex flex-col gap-1">
+                          <input value={row.code} onChange={(e) => updateRow(index, "code", e.target.value)}
+                            className="w-full rounded-md border border-zinc-200 px-2 py-1 outline-none focus:border-zinc-400"
+                            placeholder="AAPL / 159941 / 600519.SS" />
+                          <select value={row.strategy} onChange={(e) => updateRow(index, "strategy", e.target.value)}
+                            className="w-full rounded-md border border-zinc-200 px-1 py-0.5 text-xs text-zinc-600 outline-none focus:border-zinc-400">
+                            <option value="">无策略</option>
+                            <option value="turtle">海龟策略</option>
+                          </select>
+                        </div>
                       ) : (
                         <button type="button"
                           onClick={() => onSelectStock?.(symbol, quotesQuery.data?.[symbol])}
                           className="text-left underline-offset-2 hover:underline">
                           <KlineTooltip symbol={symbol}>
                             {row.name && <span className="block font-medium text-zinc-800 truncate max-w-[120px]">{row.name}</span>}
-                            <span className="block text-xs text-zinc-400">{symbol || "-"}</span>
+                            <span className="block text-xs text-zinc-400">
+                              {symbol || "-"}
+                              {row.strategy === "turtle" && <span className="ml-1 rounded bg-amber-100 px-1 text-[10px] text-amber-700">海龟</span>}
+                            </span>
                           </KlineTooltip>
                         </button>
                       )}
@@ -313,6 +365,16 @@ export default function PortfolioDashboard({
                       <span>{totalPnl >= 0 ? "+" : ""}{totalPnl.toFixed(2)}</span>
                       <span className="ml-1 text-xs opacity-75">({totalPct >= 0 ? "+" : ""}{totalPct.toFixed(2)}%)</span>
                     </td>
+                    {(() => {
+                      const isTurtle = row.strategy === "turtle";
+                      const t = isTurtle ? turtleByCode.get(symbol) : undefined;
+                      return (
+                        <td className={`py-2 pr-2 ${t?.stopTriggered ? "rounded bg-rose-50 px-1 font-semibold text-rose-600" : "text-zinc-700"}`}>
+                          {isTurtle ? (t ? fmtStop(t.stopLoss) : "…") : "-"}
+                          {t?.stopTriggered && <span className="ml-1 text-[10px]">已触发</span>}
+                        </td>
+                      );
+                    })()}
                     <td className="py-2">
                       <div className="flex justify-end gap-2 whitespace-nowrap">
                         {row.isEditing ? (
@@ -333,6 +395,12 @@ export default function PortfolioDashboard({
                                 className="inline-flex items-center gap-1 rounded-md border border-zinc-200 px-2 py-1 text-zinc-700 hover:bg-zinc-100">
                                 <Eye size={14} />详情
                               </Link>
+                            )}
+                            {row.id && (
+                              <button type="button" onClick={() => void sendTestMail(row.id!)}
+                                className="inline-flex items-center gap-1 rounded-md border border-amber-200 px-2 py-1 text-amber-700 hover:bg-amber-50">
+                                <Mail size={14} />Test
+                              </button>
                             )}
                             <button type="button" onClick={() => editRow(index)}
                               className="inline-flex items-center gap-1 rounded-md border border-zinc-200 px-2 py-1 text-zinc-700 hover:bg-zinc-100">
@@ -370,6 +438,14 @@ export default function PortfolioDashboard({
                     <input value={row.code} onChange={(e) => updateRow(index, "code", e.target.value)}
                       className="w-full rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-sm outline-none focus:border-zinc-400"
                       placeholder="代码：AAPL / 159941 / 600519.SS" />
+                    <div>
+                      <label className="mb-0.5 block text-xs text-zinc-500">策略</label>
+                      <select value={row.strategy} onChange={(e) => updateRow(index, "strategy", e.target.value)}
+                        className="w-full rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-sm outline-none focus:border-zinc-400">
+                        <option value="">无策略</option>
+                        <option value="turtle">海龟策略</option>
+                      </select>
+                    </div>
                     <div className="grid grid-cols-2 gap-2">
                       <div>
                         <label className="mb-0.5 block text-xs text-zinc-500">成本价</label>
@@ -403,7 +479,10 @@ export default function PortfolioDashboard({
                         className="text-left underline-offset-2 hover:underline">
                         <KlineTooltip symbol={symbol}>
                           {row.name && <span className="block text-base font-semibold text-zinc-800">{row.name}</span>}
-                          <span className="block text-xs text-zinc-400">{symbol || "-"}</span>
+                          <span className="block text-xs text-zinc-400">
+                            {symbol || "-"}
+                            {row.strategy === "turtle" && <span className="ml-1 rounded bg-amber-100 px-1 text-[10px] text-amber-700">海龟</span>}
+                          </span>
                         </KlineTooltip>
                       </button>
                       <span className={`text-base font-semibold ${dayPnl >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
@@ -423,12 +502,28 @@ export default function PortfolioDashboard({
                         </span>
                       </div>
                     </div>
+                    {(() => {
+                      if (row.strategy !== "turtle") return null;
+                      const t = turtleByCode.get(symbol);
+                      return (
+                        <div className="mb-3 rounded-md bg-white px-2 py-1.5 text-xs text-zinc-500">
+                          <span className="block">止损价 {t?.stopTriggered && <span className="ml-1 rounded bg-rose-100 px-1 text-[10px] text-rose-600">已触发</span>}</span>
+                          <span className={`text-sm font-medium ${t?.stopTriggered ? "text-rose-600" : "text-zinc-700"}`}>{t ? fmtStop(t.stopLoss) : "…"}</span>
+                        </div>
+                      );
+                    })()}
                     <div className="flex gap-2">
                       {row.id && (
                         <Link href={`/positions/${row.id}`}
                           className="flex-1 inline-flex items-center justify-center gap-1 rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-xs text-zinc-700 hover:bg-zinc-100">
                           <Eye size={13} />详情
                         </Link>
+                      )}
+                      {row.id && (
+                        <button type="button" onClick={() => void sendTestMail(row.id!)}
+                          className="flex-1 inline-flex items-center justify-center gap-1 rounded-md border border-amber-200 bg-white px-2 py-1.5 text-xs text-amber-700 hover:bg-amber-50">
+                          <Mail size={13} />Test
+                        </button>
                       )}
                       <button type="button" onClick={() => editRow(index)}
                         className="flex-1 inline-flex items-center justify-center gap-1 rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-xs text-zinc-700 hover:bg-zinc-100">

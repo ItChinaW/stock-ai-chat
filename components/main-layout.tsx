@@ -216,7 +216,7 @@ function NewsAiModal({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     Promise.allSettled(
-      (["ths", "em", "sina", "global"] as const).map(s =>
+      (["ths", "em", "sina", "global", "bloomberg"] as const).map(s =>
         fetch(`/api/market/news?source=${s}`).then(r => r.json() as Promise<NewsItem[]>).then(data => ({ s, data }))
       )
     ).then(results => {
@@ -226,7 +226,7 @@ function NewsAiModal({ onClose }: { onClose: () => void }) {
   }, []);
 
   function buildSystemPrompt() {
-    const labels: Record<string, string> = { ths: "同花顺", em: "东方财富", sina: "新浪财经", global: "全球" };
+    const labels: Record<string, string> = { ths: "同花顺", em: "东方财富", sina: "新浪财经", global: "全球", bloomberg: "彭博社" };
     const lines = ["你是一位专业的财经分析师，请基于以下最新市场新闻，回答用户的问题。分析要结合具体新闻内容，观点简洁有据。", ""];
     for (const [src, label] of Object.entries(labels)) {
       const items = newsRef.current[src] ?? [];
@@ -324,7 +324,7 @@ export default function MainLayout() {
   const [chatOpen, setChatOpen] = useState(false);
   const [portfolioAiOpen, setPortfolioAiOpen] = useState(false);
   const [newsAiOpen, setNewsAiOpen] = useState(false);
-  const [newsSource, setNewsSource] = useState<"ths" | "em" | "sina" | "global">("ths");
+  const [newsSource, setNewsSource] = useState<"ths" | "em" | "sina" | "global" | "bloomberg">("ths");
 
   const { data: news = [] } = useQuery<NewsItem[]>({
     queryKey: ["market-news", newsSource],
@@ -395,10 +395,10 @@ export default function MainLayout() {
           <div className="mb-3">
             <p className="text-xs font-medium text-zinc-400 uppercase tracking-wide mb-2">市场热点</p>
             <div className="flex rounded-lg border border-zinc-100 overflow-hidden text-[11px] w-full">
-              {(["ths", "em", "sina", "global"] as const).map(s => (
+              {(["ths", "em", "sina", "global", "bloomberg"] as const).map(s => (
                 <button key={s} type="button" onClick={() => setNewsSource(s)}
                   className={`flex-1 py-1 transition ${newsSource === s ? "bg-zinc-900 text-white" : "text-zinc-400 hover:text-zinc-600"}`}>
-                  {s === "ths" ? "同花顺" : s === "em" ? "东方财富" : s === "sina" ? "新浪" : "全球"}
+                  {s === "ths" ? "同花顺" : s === "em" ? "东方财富" : s === "sina" ? "新浪" : s === "bloomberg" ? "彭博" : "全球"}
                 </button>
               ))}
             </div>

@@ -13,7 +13,7 @@ const DEFAULT_TIMEOUT_MS = 8000;
 // 转换为新浪格式：600001 -> sh600001，000001 -> sz000001
 export function toSinaSymbol(symbol: string): string {
   const s = symbol.toLowerCase();
-  if (s.startsWith("sh") || s.startsWith("sz")) return s;
+  if (s.startsWith("sh") || s.startsWith("sz") || s.startsWith("bj")) return s;
   if (s.startsWith("gb_") || s.startsWith("hf_") || s.startsWith("fx_")) return s;
   if (symbol.startsWith(".")) return `gb_${symbol.slice(1).toLowerCase()}`;
   if (!/^\d{6}$/.test(symbol)) return `gb_${symbol.toLowerCase()}`;
@@ -85,7 +85,15 @@ async function fetchSinaQuotes(symbols: string[]): Promise<QuoteItem[]> {
 }
 
 // 东方财富 secid 映射（目前仅保留确认可用的品种）
-const EASTMONEY_SYMBOL_MAP: Record<string, { secid: string; currency: string }> = {};
+const EASTMONEY_SYMBOL_MAP: Record<string, { secid: string; currency: string }> = {
+  "em_sse":    { secid: "1.000001",  currency: "CNY" },
+  "em_ndx":    { secid: "100.NDX",   currency: "USD" },
+  "em_n225":   { secid: "100.N225",  currency: "JPY" },
+  "em_ks11":   { secid: "100.KS11",  currency: "KRW" },
+  "em_twii":   { secid: "100.TWII",  currency: "TWD" },
+  "em_hsi":    { secid: "100.HSI",   currency: "HKD" },
+  "em_ftse":   { secid: "100.FTSE",  currency: "GBP" },
+};
 
 // 新浪期货/外汇行情（hf_ / fx_ 前缀），格式与股票不同
 const isHfSymbol = (s: string) => s.startsWith("hf_");
@@ -295,4 +303,49 @@ export async function fetchYahooQuotes(symbols: string[]): Promise<QuoteItem[]> 
 
   const resultMap = new Map([...emResults, ...hfResults, ...sinaResults].map((r) => [r.symbol, r]));
   return symbols.map((s) => resultMap.get(s)).filter((v): v is QuoteItem => v != null);
+}
+
+
+// Yahoo Finance 批量查询（用于海外指数，v8 chart 接口逐个并发）
+export async function fetchYahooQuotesV7(yahooSymbols: string[]): Promise<QuoteItem[]> {
+  if (yahooSymbols.length === 0) return [];
+
+  const results = await Promise.allSettled(
+    yahooSymbols.map(async (symbol): Promise<QuoteItem | null> => {
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+      try {
+        const res = await fetch(url, {
+          headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" },
+          signal: controller.signal,
+          cache: "no-store",
+        });
+        if (!res.ok) return null;
+        const json = await res.json() as {
+          chart: { result?: { meta: { symbol: string; shortName?: string; regularMarketPrice: number; chartPreviousClose: number; currency?: string } }[] };
+        };
+        const meta = json.chart.result?.[0]?.meta;
+        if (!meta || !meta.regularMarketPrice) return null;
+        const change = meta.regularMarketPrice - meta.chartPreviousClose;
+        const changePct = meta.chartPreviousClose > 0 ? change / meta.chartPreviousClose * 100 : 0;
+        return {
+          symbol,
+          name: meta.shortName ?? symbol,
+          price: meta.regularMarketPrice,
+          change,
+          changePercent: changePct,
+          previousClose: meta.chartPreviousClose,
+          currency: meta.currency ?? "USD",
+        };
+      } finally {
+        clearTimeout(timeout);
+      }
+    })
+  );
+
+  return results
+    .filter((r): r is PromiseFulfilledResult<QuoteItem | null> => r.status === "fulfilled")
+    .map(r => r.value)
+    .filter((v): v is QuoteItem => v != null);
 }

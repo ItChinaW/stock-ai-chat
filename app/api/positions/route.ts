@@ -3,11 +3,12 @@ import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 
 function normalizePositionInput(body: unknown) {
-  const input = body as { code?: string; costPrice?: number; amount?: number };
+  const input = body as { code?: string; costPrice?: number; amount?: number; strategy?: string };
   return {
     code: input.code?.trim().toUpperCase() ?? "",
     costPrice: Number(input.costPrice ?? 0),
     amount: Number(input.amount ?? 0),
+    strategy: input.strategy?.trim() ?? "",
   };
 }
 

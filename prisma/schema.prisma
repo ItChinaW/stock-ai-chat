@@ -32,6 +32,7 @@ model Position {
   name      String   @default("")
   costPrice Float    @map("cost_price")
   amount    Float
+  strategy  String   @default("") // 策略标识，如 "turtle"；空表示无策略
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
   user      User     @relation(fields: [userId], references: [id])

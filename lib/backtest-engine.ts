@@ -751,23 +751,72 @@ export function getLatestSignal(
   candles: Candle[], strategyCode: string, params: BacktestParams,
 ): LiveSignal {
   const signals = genSignals(candles, strategyCode, params);
-  const atrVals = atrArr(candles, params.atrPeriod ?? 14);
-  const atrMult = params.atrMult ?? 2;
   const n = candles.length;
 
   let inPosition = false, entryPrice = 0, entryDate = "", stopLoss = 0;
 
-  for (let i = 1; i < n; i++) {
-    const c = candles[i]!;
-    if (inPosition) {
-      const hitStop = c.low <= stopLoss, exitSig = signals[i] === -1;
-      if (hitStop || exitSig) { inPosition = false; entryPrice = 0; entryDate = ""; stopLoss = 0; }
+  if (strategyCode === "turtle") {
+    // 专用分支：与 runTurtle 规则保持一致 —— 20 日 ATR、金字塔加仓、止损上移
+    const ep = params.entryPeriod ?? 20;
+    const xp = params.exitPeriod ?? 10;
+    const atrPeriod = 20; // 海龟原版 ATR 周期
+    const turtleAtr = atrArr(candles, atrPeriod);
+    let units: { price: number; date: string }[] = [];
+
+    for (let i = Math.max(ep, xp, atrPeriod); i < n; i++) {
+      const c = candles[i]!;
+      const price = c.close;
+      const atr = turtleAtr[i] ?? price * 0.02;
+
+      // 平仓检查：触及 -2N 止损 或 跌破 10 日低点
+      if (units.length > 0) {
+        const exitLo = Math.min(...candles.slice(i - xp, i).map(c2 => c2.low));
+        if (c.low <= stopLoss || price < exitLo) {
+          units = [];
+          stopLoss = 0;
+        }
+      }
+
+      // 入场 / 加仓
+      if (units.length < 4) {
+        const entryHi = Math.max(...candles.slice(i - ep, i).map(c2 => c2.high));
+        if (units.length === 0 && price > entryHi) {
+          units.push({ price, date: c.time });
+          stopLoss = price - 2 * atr;
+        } else if (units.length > 0) {
+          const lastEntry = units[units.length - 1]!.price;
+          if (price >= lastEntry + 0.5 * atr) {
+            units.push({ price, date: c.time });
+            stopLoss = price - 2 * atr;
+          }
+        }
+      }
     }
-    if (!inPosition && signals[i] === 1) {
-      entryPrice = c.close; entryDate = c.time;
-      const a = atrVals[i] ?? c.close * 0.02;
-      stopLoss = entryPrice - a * atrMult;
-      inPosition = true;
+
+    inPosition = units.length > 0;
+    if (inPosition) {
+      // 平均入场价（按 unit 等股数计）
+      entryPrice = units.reduce((s, u) => s + u.price, 0) / units.length;
+      entryDate = units[0]!.date;
+      // 实际触发止损 = max(-2N 止损, 最近 xp 日最低价) —— 二者取近的那个
+      const recentLow = Math.min(...candles.slice(n - xp, n).map(c => c.low));
+      stopLoss = Math.max(stopLoss, recentLow);
+    }
+  } else {
+    const atrVals = atrArr(candles, params.atrPeriod ?? 14);
+    const atrMult = params.atrMult ?? 2;
+    for (let i = 1; i < n; i++) {
+      const c = candles[i]!;
+      if (inPosition) {
+        const hitStop = c.low <= stopLoss, exitSig = signals[i] === -1;
+        if (hitStop || exitSig) { inPosition = false; entryPrice = 0; entryDate = ""; stopLoss = 0; }
+      }
+      if (!inPosition && signals[i] === 1) {
+        entryPrice = c.close; entryDate = c.time;
+        const a = atrVals[i] ?? c.close * 0.02;
+        stopLoss = entryPrice - a * atrMult;
+        inPosition = true;
+      }
     }
   }
 

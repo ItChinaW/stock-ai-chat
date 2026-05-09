@@ -62,6 +62,13 @@ const RSS_FEEDS = [
   { url: "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml", tag: "NYT" },
 ];
 
+// ── 彭博社 RSS ────────────────────────────────────────────
+const BLOOMBERG_FEEDS = [
+  { url: "https://feeds.bloomberg.com/markets/news.rss", tag: "Bloomberg" },
+  { url: "https://feeds.bloomberg.com/technology/news.rss", tag: "Bloomberg" },
+  { url: "https://feeds.bloomberg.com/economics/news.rss", tag: "Bloomberg" },
+];
+
 function parseRss(xml: string, tag: string): { title: string; url: string; time: number; tag: string }[] {
   const items: { title: string; url: string; time: number; tag: string }[] = [];
   const itemRe = /<item>([\s\S]*?)<\/item>/g;
@@ -139,6 +146,35 @@ async function fetchGlobal(): Promise<NewsItem[]> {
   }));
 }
 
+async function fetchBloomberg(): Promise<NewsItem[]> {
+  const results = await Promise.allSettled(BLOOMBERG_FEEDS.map(feed =>
+    fetch(feed.url, {
+      headers: { "User-Agent": "Mozilla/5.0", Accept: "application/rss+xml, application/xml" },
+      next: { revalidate: 300 },
+    }).then(r => r.text()).then(xml => parseRss(xml, feed.tag))
+  ));
+
+  const all: { title: string; url: string; time: number; tag: string }[] = [];
+  for (const r of results) if (r.status === "fulfilled") all.push(...r.value);
+
+  const seen = new Set<string>();
+  const deduped = all
+    .filter(item => { if (seen.has(item.url)) return false; seen.add(item.url); return true; })
+    .sort((a, b) => b.time - a.time)
+    .slice(0, 30);
+
+  const translated = await translateTitles(deduped.map(i => i.title));
+
+  return deduped.map((item, i) => ({
+    title: translated[i]!,
+    url: item.url,
+    digest: "",
+    tag: "彭博",
+    hot: 0,
+    time: item.time,
+  }));
+}
+
 // ── 路由 ─────────────────────────────────────────────────
 export const revalidate = 60;
 
@@ -151,9 +187,10 @@ export async function GET(req: Request) {
     if (source === "em") items = await fetchEm();
     else if (source === "sina") items = await fetchSina();
     else if (source === "global") items = await fetchGlobal();
+    else if (source === "bloomberg") items = await fetchBloomberg();
     else items = await fetchThs();
 
-    if (source !== "global") items.sort((a, b) => b.hot - a.hot || b.time - a.time);
+    if (source !== "global" && source !== "bloomberg") items.sort((a, b) => b.hot - a.hot || b.time - a.time);
     return NextResponse.json(items.slice(0, 25));
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : "failed" }, { status: 500 });

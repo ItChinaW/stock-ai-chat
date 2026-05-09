@@ -25,7 +25,7 @@ export async function PUT(request: NextRequest, context: { params: Promise<{ id:
 
   try {
     const userId = await getCurrentUserId();
-    const payload = (await request.json()) as { code?: string; costPrice?: number; amount?: number; name?: string };
+    const payload = (await request.json()) as { code?: string; costPrice?: number; amount?: number; name?: string; strategy?: string };
     const updated = await prisma.position.updateMany({
       where: { id: positionId, userId },
       data: {
@@ -33,6 +33,7 @@ export async function PUT(request: NextRequest, context: { params: Promise<{ id:
         costPrice: Number(payload.costPrice ?? 0),
         amount: Number(payload.amount ?? 0),
         ...(payload.name ? { name: payload.name } : {}),
+        ...(payload.strategy !== undefined ? { strategy: payload.strategy.trim() } : {}),
       },
     });
     if (updated.count === 0) return NextResponse.json({ message: "Not found" }, { status: 404 });
