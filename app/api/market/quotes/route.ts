@@ -29,8 +29,6 @@ export async function GET(request: NextRequest) {
           extendedPrice: item.extendedPrice,
           extendedChangePercent: item.extendedChangePercent,
           extendedStale: item.extendedStale,
-          overnightPrice: item.overnightPrice,
-          overnightChangePercent: item.overnightChangePercent,
         },
       ]),
     );

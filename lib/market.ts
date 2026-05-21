@@ -12,9 +12,6 @@ export type QuoteItem = {
   extendedChangePercent?: number;
   // 延长时段数据是否已过期（处于无 tick 空档，比如美东 20:00-04:00 之间）
   extendedStale?: boolean;
-  // 美股夜盘（Blue Ocean ATS，20:00-04:00 ET），来自 Webull
-  overnightPrice?: number;
-  overnightChangePercent?: number;
 };
 
 const DEFAULT_TIMEOUT_MS = 8000;
@@ -324,24 +321,10 @@ export async function fetchYahooQuotes(symbols: string[]): Promise<QuoteItem[]> 
 export async function fetchYahooUSQuotes(symbols: string[]): Promise<QuoteItem[]> {
   if (symbols.length === 0) return [];
 
-  const bareTickers = symbols.map(s => s.startsWith("gb_") ? s.slice(3).toUpperCase() : s.toUpperCase());
-
-  const [yahooResults, overnightResults] = await Promise.all([
-    fetchYahooUSQuotesRaw(symbols),
-    // 夜盘 / 延长时段：失败不影响主流程
-    import("./tradingview").then(m => m.fetchTradingViewOvernight(bareTickers)).catch(() => []),
-  ]);
-
-  const overnightMap = new Map(overnightResults.map(o => [o.symbol, o]));
-  return yahooResults.map(q => {
-    const yahooSymbol = q.symbol.startsWith("gb_") ? q.symbol.slice(3).toUpperCase() : q.symbol.toUpperCase();
-    const ot = overnightMap.get(yahooSymbol);
-    if (ot?.overnightPrice != null) {
-      q.overnightPrice = ot.overnightPrice;
-      q.overnightChangePercent = ot.overnightChangePercent;
-    }
-    return q;
-  });
+  return fetchYahooUSQuotesRaw(symbols);
+  // 备注：尝试过 Webull / TradingView Scanner 拿 BLUO 20:00-04:00 ET 夜盘价，
+  // Webull quote API 要登录态、TradingView Scanner 只有 pre/post 字段。
+  // 想要真夜盘只能上 Polygon ($29/月) 或登录态爬虫。
 }
 
 async function fetchYahooUSQuotesRaw(symbols: string[]): Promise<QuoteItem[]> {

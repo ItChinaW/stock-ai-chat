@@ -9,7 +9,6 @@ type Quote = {
   price: number; changePercent: number; previousClose: number; name?: string;
   extendedSession?: "pre" | "post"; extendedPrice?: number; extendedChangePercent?: number;
   extendedStale?: boolean;
-  overnightPrice?: number; overnightChangePercent?: number;
 };
 
 async function fetchWatchlist(): Promise<WatchItem[]> {
@@ -137,17 +136,6 @@ export default function Watchlist({
                       <span className={(q.extendedChangePercent ?? 0) >= 0 ? "text-emerald-600" : "text-rose-600"}>
                         {(q.extendedChangePercent ?? 0) >= 0 ? "+" : ""}{(q.extendedChangePercent ?? 0).toFixed(2)}%
                       </span>
-                    </p>
-                  )}
-                  {q?.overnightPrice != null && (
-                    <p className="mt-0.5 flex items-center justify-end gap-1 text-[10px] text-zinc-500">
-                      <span className="rounded bg-violet-100 px-1 text-violet-700">夜盘</span>
-                      <span className="text-zinc-600">{q.overnightPrice.toFixed(3)}</span>
-                      {q.overnightChangePercent != null && (
-                        <span className={q.overnightChangePercent >= 0 ? "text-emerald-600" : "text-rose-600"}>
-                          {q.overnightChangePercent >= 0 ? "+" : ""}{q.overnightChangePercent.toFixed(2)}%
-                        </span>
-                      )}
                     </p>
                   )}
                 </div>
