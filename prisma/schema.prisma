@@ -1,5 +1,7 @@
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  // Vercel 部署需要 RHEL 二进制，本地保留 native
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
 }
 
 datasource db {
