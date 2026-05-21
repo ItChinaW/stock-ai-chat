@@ -1,13 +1,8 @@
 /**
- * Webull 美股夜盘报价 —— 抓公开网页 (无需登录)。
+ * Webull 美股夜盘报价 —— 先抓 webull.com 网页里的 <meta name="token">,
+ * 再带着这个 token 调 getRealTimeV2。
  *
- * 思路：
- *   1) /api/search/pc/tickers 拿 tickerId + 交易所 (search 仍是公开的)
- *   2) https://www.webull.com/quote/{nasdaq|nyse|amex}-{symbol} 拉 HTML
- *   3) 在 HTML 里找 __NEXT_DATA__ / window.__INITIAL_STATE__ / inline JSON
- *      解析出夜盘价
- *
- * Webull quote API (getRealTimeV2 等) 现在都要登录态返回 417，故不再使用。
+ * 之前直接调 quote API 全部 417，疑因缺少 SPA 通过 meta token 注入的鉴权 header。
  */
 
 const WEBULL_API_BASES = [
@@ -18,18 +13,20 @@ const WEBULL_WEB = "https://www.webull.com";
 
 const BROWSER_HEADERS: Record<string, string> = {
   "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7",
+  "Accept": "application/json, text/plain, */*",
   "Accept-Language": "en-US,en;q=0.9",
+  "Origin": "https://www.webull.com",
+  "Referer": "https://www.webull.com/",
 };
 
 const TIMEOUT_MS = 8000;
 const tickerCache = new Map<string, { tickerId: number; exchange: string }>();
 
-async function fetchOnce(url: string, ms = TIMEOUT_MS): Promise<Response | null> {
+async function fetchWithHeaders(url: string, headers: Record<string, string> = {}, ms = TIMEOUT_MS): Promise<Response | null> {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), ms);
   try {
-    return await fetch(url, { headers: BROWSER_HEADERS, signal: controller.signal, cache: "no-store" });
+    return await fetch(url, { headers: { ...BROWSER_HEADERS, ...headers }, signal: controller.signal, cache: "no-store" });
   } catch (err) {
     console.warn(`[webull] fetch ${url} error: ${err instanceof Error ? err.message : err}`);
     return null;
@@ -50,7 +47,7 @@ async function searchSymbol(symbol: string): Promise<{ tickerId: number; exchang
   if (cached) return cached;
 
   for (const base of WEBULL_API_BASES) {
-    const res = await fetchOnce(`${base}/api/search/pc/tickers?keyword=${encodeURIComponent(symbol)}&pageIndex=1&pageSize=10&regionId=6`);
+    const res = await fetchWithHeaders(`${base}/api/search/pc/tickers?keyword=${encodeURIComponent(symbol)}&pageIndex=1&pageSize=10&regionId=6`);
     if (!res?.ok) continue;
     try {
       const json = await res.json() as { data?: { tickerId: number; symbol: string; disExchangeCode?: string; regionId?: number }[] };
@@ -64,8 +61,31 @@ async function searchSymbol(symbol: string): Promise<{ tickerId: number; exchang
       }
     } catch { /* try next */ }
   }
-  console.warn(`[webull] search ${symbol} no match`);
   return null;
+}
+
+// 从一个 quote 页面拿 <meta name="token"> 的内容
+let cachedToken: { value: string; expires: number } | null = null;
+async function getWebullToken(): Promise<string | null> {
+  if (cachedToken && Date.now() < cachedToken.expires) return cachedToken.value;
+
+  // 任何一个 quote 页面都行，用 AAPL 当探针
+  const res = await fetchWithHeaders(`${WEBULL_WEB}/quote/nasdaq-aapl`, {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.7",
+  });
+  if (!res?.ok) {
+    console.warn(`[webull] fetch token page -> ${res?.status ?? "no response"}`);
+    return null;
+  }
+  const html = await res.text();
+  const m = html.match(/<meta\s+name="token"\s+content="([^"]+)"/);
+  if (!m) {
+    console.warn("[webull] no <meta name='token'> in HTML");
+    return null;
+  }
+  cachedToken = { value: m[1]!, expires: Date.now() + 5 * 60_000 }; // 5min 缓存
+  console.log(`[webull] got token (${cachedToken.value.length} chars)`);
+  return cachedToken.value;
 }
 
 export type WebullOvernight = {
@@ -74,92 +94,76 @@ export type WebullOvernight = {
   overnightChangePercent?: number;
 };
 
-// HTML 里把夜盘字段挖出来 —— Webull 用过多种字段名，全部兼容
-function extractOvernight(html: string, symbol: string): { price?: number; changePercent?: number } {
-  // 1) 优先找 __NEXT_DATA__
-  const nextMatch = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
-  if (nextMatch?.[1]) {
-    try {
-      const obj = JSON.parse(nextMatch[1]);
-      const found = walk(obj);
-      if (found) return found;
-    } catch { /* fall through */ }
-  }
-
-  // 2) 兜底正则：找 "overnight" 附近的 price/changeRatio
-  // 形如 "overnight":{"price":"7.40","changeRatio":"-0.0234",...}
-  const reg = /"overnight(?:Trade)?"\s*:\s*\{[^}]*?"(?:price|close)"\s*:\s*"?([0-9.]+)"?[^}]*?"changeRatio"\s*:\s*"?(-?[0-9.]+)"?/;
-  const m = html.match(reg);
-  if (m) {
-    return { price: Number(m[1]), changePercent: Number(m[2]) * 100 };
-  }
-
-  // 3) 找 otPrice / overnightPrice 直接字段
-  const m2 = html.match(/"(?:overnightPrice|otPrice)"\s*:\s*"?(-?[0-9.]+)"?/);
-  if (m2) {
-    const price = Number(m2[1]);
-    const m3 = html.match(/"(?:overnightChangeRatio|otChangeRatio)"\s*:\s*"?(-?[0-9.]+)"?/);
-    return { price, changePercent: m3 ? Number(m3[1]) * 100 : undefined };
-  }
-
-  return {};
-
-  // 递归找 JSON 里包含 overnight 信息的对象
-  function walk(node: unknown): { price?: number; changePercent?: number } | null {
-    if (!node || typeof node !== "object") return null;
-    if (Array.isArray(node)) {
-      for (const item of node) {
-        const r = walk(item);
-        if (r) return r;
-      }
-      return null;
-    }
-    const obj = node as Record<string, unknown>;
-
-    // 命中：对象自身就有 overnight 字段
-    const ot = obj.overnight ?? obj.overnightTrade;
-    if (ot && typeof ot === "object") {
-      const o = ot as Record<string, unknown>;
-      const p = o.price ?? o.close;
-      const r = o.changeRatio ?? o.changePercent;
-      if (p != null) return { price: Number(p), changePercent: r != null ? Number(r) * 100 : undefined };
-    }
-    // 命中：扁平字段
-    if (obj.overnightPrice != null || obj.otPrice != null) {
-      const p = (obj.overnightPrice ?? obj.otPrice) as number | string;
-      const r = (obj.overnightChangeRatio ?? obj.otChangeRatio) as number | string | undefined;
-      return { price: Number(p), changePercent: r != null ? Number(r) * 100 : undefined };
-    }
-    // 递归
-    for (const v of Object.values(obj)) {
-      const r = walk(v);
-      if (r) return r;
-    }
-    return null;
-  }
-}
-
 export async function fetchWebullOvernight(symbols: string[]): Promise<WebullOvernight[]> {
   if (symbols.length === 0) return [];
 
-  return (await Promise.all(symbols.map(async (sym): Promise<WebullOvernight | null> => {
-    const meta = await searchSymbol(sym);
-    if (!meta) return null;
-    const url = `${WEBULL_WEB}/quote/${meta.exchange}-${sym.toLowerCase()}`;
-    const res = await fetchOnce(url);
-    if (!res?.ok) {
-      console.warn(`[webull] page ${url} -> ${res?.status ?? "no response"}`);
-      return null;
-    }
-    const html = await res.text();
+  const token = await getWebullToken();
+  if (!token) return [];
 
-    const parsed = extractOvernight(html, sym);
-    if (parsed.price == null) {
-      // 没拿到 —— 头一次部署留个 sample 给我对结构
-      console.log(`[webull-page] ${sym} no overnight match. head:\n${html.slice(0, 1500)}`);
-      return null;
+  // 解析 tickerId
+  const resolved = await Promise.all(symbols.map(async s => ({ symbol: s.toUpperCase(), meta: await searchSymbol(s) })));
+  const valid = resolved.filter((r): r is { symbol: string; meta: { tickerId: number; exchange: string } } => r.meta != null);
+  if (valid.length === 0) return [];
+
+  const ids = valid.map(v => v.meta.tickerId).join(",");
+  const headers: Record<string, string> = {
+    "t_token": token,
+    "access_token": token,
+    "App-Token": token,
+    "platform": "web",
+    "hl": "en",
+    "os": "web",
+    "app": "global",
+    "appid": "wb_web_app",
+    "device-type": "Web",
+    "did": "gldaboazf4y28thligawz4a7xamqu91g",
+  };
+
+  // 试若干 endpoint
+  const candidates = [
+    `/api/quotes/ticker/getRealTimeV2?tickerIds=${ids}&includeSecu=1&includeQuote=1&more=1`,
+    `/api/quotes/ticker/getRealTimePcv2?tickerIds=${ids}`,
+    `/api/quote/v4/charts/realtime?tickerIds=${ids}`,
+  ];
+
+  for (const base of WEBULL_API_BASES) {
+    for (const path of candidates) {
+      const res = await fetchWithHeaders(`${base}${path}`, headers);
+      if (!res) continue;
+      if (!res.ok) {
+        console.warn(`[webull] ${base}${path.split("?")[0]} -> ${res.status}`);
+        continue;
+      }
+
+      console.log(`[webull] using ${base}${path.split("?")[0]}`);
+      const raw = await res.json() as unknown;
+      const list = Array.isArray(raw) ? raw : (raw as { data?: unknown[] }).data ?? [];
+
+      // 打印第一条样本
+      console.log(`[webull] raw[0] keys: ${Object.keys((list[0] ?? {}) as object).join(",")}`);
+      console.log(`[webull] raw[0]: ${JSON.stringify(list[0]).slice(0, 1200)}`);
+
+      const idToSymbol = new Map(valid.map(v => [v.meta.tickerId, v.symbol]));
+      return (list as Record<string, unknown>[]).map((q): WebullOvernight | null => {
+        const tickerId = Number(q.tickerId ?? (q as { ticker?: { tickerId?: number } }).ticker?.tickerId);
+        const symbol = idToSymbol.get(tickerId) ?? (q.symbol as string | undefined)?.toUpperCase();
+        if (!symbol) return null;
+
+        const otObj = (q.overnight ?? q.overnightTrade ?? q.overnightInfo) as Record<string, unknown> | undefined;
+        const priceRaw = otObj?.price ?? otObj?.close ?? q.overnightPrice ?? q.otPrice;
+        const ratioRaw = otObj?.changeRatio ?? otObj?.changePercent ?? q.overnightChangeRatio ?? q.otChangeRatio;
+        const price = priceRaw != null ? Number(priceRaw) : NaN;
+        if (!Number.isFinite(price)) return { symbol };
+        const ratio = ratioRaw != null ? Number(ratioRaw) : NaN;
+        return {
+          symbol,
+          overnightPrice: price,
+          overnightChangePercent: Number.isFinite(ratio) ? ratio * 100 : undefined,
+        };
+      }).filter((v): v is WebullOvernight => v != null);
     }
-    console.log(`[webull-page] ${sym} overnight=${parsed.price} change=${parsed.changePercent}`);
-    return { symbol: sym.toUpperCase(), overnightPrice: parsed.price, overnightChangePercent: parsed.changePercent };
-  }))).filter((v): v is WebullOvernight => v != null);
+  }
+
+  console.warn("[webull] all quote endpoints failed");
+  return [];
 }
