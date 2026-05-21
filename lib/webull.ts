@@ -54,14 +54,18 @@ async function fetchOnce(url: string, ms = TIMEOUT_MS): Promise<Response | null>
   }
 }
 
-// 走两个域名兜底
+// 走两个域名兜底；返回第一个成功响应，否则返回最后一次响应（含错误码）便于上层判断
 async function fetchWithFallback(path: string, query: string): Promise<Response | null> {
+  let last: Response | null = null;
   for (const base of WEBULL_BASES) {
     const res = await fetchOnce(`${base}${path}?${query}`);
     if (res?.ok) return res;
-    if (res) console.warn(`[webull] ${base}${path} -> ${res.status}`);
+    if (res) {
+      console.warn(`[webull] ${base}${path} -> ${res.status}`);
+      last = res;
+    }
   }
-  return null;
+  return last;
 }
 
 async function searchTickerId(symbol: string): Promise<number | null> {
@@ -112,13 +116,24 @@ export async function fetchWebullOvernight(symbols: string[]): Promise<WebullOve
   const valid = resolved.filter((r): r is { symbol: string; id: number } => r.id != null);
   if (valid.length === 0) return [];
 
-  // 2) 批量拉取实时报价
+  // 2) 批量拉取实时报价 —— 多个公开 endpoint 兜底，谁先 200 用谁
   const ids = valid.map(v => v.id).join(",");
-  const res = await fetchWithFallback(
-    "/api/quotes/ticker/getRealTimeV2",
-    `tickerIds=${ids}&includeSecu=1&includeQuote=1&more=1`,
-  );
-  if (!res) return [];
+  const candidates: { path: string; query: string }[] = [
+    { path: "/api/quote/v4/charts/realtime", query: `tickerIds=${ids}` },
+    { path: "/api/stock/tickerRealTime/getQuote", query: `tickerIds=${ids}&includeSecu=1` },
+    { path: "/api/quotes/quoteV2/list", query: `tickerIds=${ids}` },
+    { path: "/api/quotes/ticker/getRealTimePcv2", query: `tickerIds=${ids}` },
+    { path: "/api/quotes/ticker/getRealTimeV2", query: `tickerIds=${ids}&includeSecu=1&includeQuote=1&more=1` },
+  ];
+  let res: Response | null = null;
+  for (const c of candidates) {
+    res = await fetchWithFallback(c.path, c.query);
+    if (res?.ok) {
+      console.log(`[webull] using endpoint ${c.path}`);
+      break;
+    }
+  }
+  if (!res?.ok) return [];
 
   try {
     // 响应通常是数组；某些版本包了一层 { data: [...] }
