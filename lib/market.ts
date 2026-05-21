@@ -328,8 +328,8 @@ export async function fetchYahooUSQuotes(symbols: string[]): Promise<QuoteItem[]
 
   const [yahooResults, overnightResults] = await Promise.all([
     fetchYahooUSQuotesRaw(symbols),
-    // Webull 失败不影响主流程
-    import("./webull").then(m => m.fetchWebullOvernight(bareTickers)).catch(() => []),
+    // 夜盘 / 延长时段：失败不影响主流程
+    import("./tradingview").then(m => m.fetchTradingViewOvernight(bareTickers)).catch(() => []),
   ]);
 
   const overnightMap = new Map(overnightResults.map(o => [o.symbol, o]));
