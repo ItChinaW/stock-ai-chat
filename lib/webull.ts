@@ -9,27 +9,59 @@
  * 部署到海外环境（Vercel）应可正常访问；国内出口大多被劫持，本地调试会失败。
  */
 
-const WEBULL_BASE = "https://quotes-gw.webullbroadcast.com";
-const UA = "Mozilla/5.0";
+const WEBULL_BASES = [
+  "https://quotes-gw.webullfintech.com",
+  "https://quotes-gw.webullbroadcast.com",
+];
+const BROWSER_HEADERS: Record<string, string> = {
+  "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  "Accept": "application/json, text/plain, */*",
+  "Accept-Language": "en-US,en;q=0.9",
+  "Origin": "https://www.webull.com",
+  "Referer": "https://www.webull.com/",
+  "platform": "web",
+  "hl": "en",
+  "os": "web",
+  "osv": "i9zh",
+  "app": "global",
+  "appid": "wb_web_app",
+  "ver": "3.39.18",
+  "lzone": "dc_core_r001",
+  "ph": "MacOS Firefox",
+  "locale": "eng",
+  "device-type": "Web",
+  "did": "gldaboazf4y28thligawz4a7xamqu91g",
+};
 const TIMEOUT_MS = 8000;
 
 // 内存 tickerId 缓存（serverless 冷启动会清空，但每次冷启动只多 1 次 search 调用，可接受）
 const tickerIdCache = new Map<string, number>();
 
-async function fetchWithTimeout(url: string, ms = TIMEOUT_MS): Promise<Response | null> {
+async function fetchOnce(url: string, ms = TIMEOUT_MS): Promise<Response | null> {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), ms);
   try {
     return await fetch(url, {
-      headers: { "User-Agent": UA, Accept: "application/json" },
+      headers: BROWSER_HEADERS,
       signal: controller.signal,
       cache: "no-store",
     });
-  } catch {
+  } catch (err) {
+    console.warn(`[webull] fetch error: ${err instanceof Error ? err.message : err}`);
     return null;
   } finally {
     clearTimeout(t);
   }
+}
+
+// 走两个域名兜底
+async function fetchWithFallback(path: string, query: string): Promise<Response | null> {
+  for (const base of WEBULL_BASES) {
+    const res = await fetchOnce(`${base}${path}?${query}`);
+    if (res?.ok) return res;
+    if (res) console.warn(`[webull] ${base}${path} -> ${res.status}`);
+  }
+  return null;
 }
 
 async function searchTickerId(symbol: string): Promise<number | null> {
@@ -37,10 +69,12 @@ async function searchTickerId(symbol: string): Promise<number | null> {
   const cached = tickerIdCache.get(key);
   if (cached) return cached;
 
-  const url = `${WEBULL_BASE}/api/search/pc/tickers?keyword=${encodeURIComponent(symbol)}&pageIndex=1&pageSize=10&regionId=6`;
-  const res = await fetchWithTimeout(url);
-  if (!res || !res.ok) {
-    console.warn(`[webull] search ${symbol} failed: ${res?.status ?? "no response"}`);
+  const res = await fetchWithFallback(
+    "/api/search/pc/tickers",
+    `keyword=${encodeURIComponent(symbol)}&pageIndex=1&pageSize=10&regionId=6`,
+  );
+  if (!res) {
+    console.warn(`[webull] search ${symbol} no response from any base`);
     return null;
   }
 
@@ -80,9 +114,11 @@ export async function fetchWebullOvernight(symbols: string[]): Promise<WebullOve
 
   // 2) 批量拉取实时报价
   const ids = valid.map(v => v.id).join(",");
-  const url = `${WEBULL_BASE}/api/quotes/ticker/getRealTimeV2?tickerIds=${ids}&includeSecu=1&includeQuote=1&more=1`;
-  const res = await fetchWithTimeout(url);
-  if (!res || !res.ok) return [];
+  const res = await fetchWithFallback(
+    "/api/quotes/ticker/getRealTimeV2",
+    `tickerIds=${ids}&includeSecu=1&includeQuote=1&more=1`,
+  );
+  if (!res) return [];
 
   try {
     // 响应通常是数组；某些版本包了一层 { data: [...] }
