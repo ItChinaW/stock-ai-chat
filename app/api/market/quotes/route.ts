@@ -25,6 +25,9 @@ export async function GET(request: NextRequest) {
           changePercent: item.changePercent,
           previousClose: item.previousClose,
           currency: item.currency,
+          extendedSession: item.extendedSession,
+          extendedPrice: item.extendedPrice,
+          extendedChangePercent: item.extendedChangePercent,
         },
       ]),
     );

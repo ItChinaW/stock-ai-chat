@@ -6,6 +6,10 @@ export type QuoteItem = {
   changePercent: number;
   previousClose: number;
   currency?: string;
+  // 美股盘前 / 盘后（仅在有数据且与盘中价不同时透出）
+  extendedSession?: "pre" | "post";
+  extendedPrice?: number;
+  extendedChangePercent?: number;
 };
 
 const DEFAULT_TIMEOUT_MS = 8000;
@@ -293,16 +297,115 @@ export async function fetchYahooKlineRecent(symbol: string, datalen = 300): Prom
 export async function fetchYahooQuotes(symbols: string[]): Promise<QuoteItem[]> {
   const emSymbols = symbols.filter((s) => s in EASTMONEY_SYMBOL_MAP);
   const hfFxSymbols = symbols.filter((s) => isHfSymbol(s) || isFxSymbol(s));
-  const sinaSymbols = symbols.filter((s) => !(s in EASTMONEY_SYMBOL_MAP) && !isHfSymbol(s) && !isFxSymbol(s));
+  // 美股走 Yahoo v8 chart（带盘前/盘后），其他走新浪
+  const otherSymbols = symbols.filter((s) => !(s in EASTMONEY_SYMBOL_MAP) && !isHfSymbol(s) && !isFxSymbol(s));
+  const usSymbols = otherSymbols.filter((s) => toSinaSymbol(s).startsWith("gb_"));
+  const sinaSymbols = otherSymbols.filter((s) => !toSinaSymbol(s).startsWith("gb_"));
 
-  const [emResults, hfResults, sinaResults] = await Promise.all([
+  const [emResults, hfResults, sinaResults, usResults] = await Promise.all([
     fetchEastMoneyQuotes(emSymbols),
     fetchSinaHfQuotes(hfFxSymbols),
     fetchSinaQuotes(sinaSymbols),
+    fetchYahooUSQuotes(usSymbols),
   ]);
 
-  const resultMap = new Map([...emResults, ...hfResults, ...sinaResults].map((r) => [r.symbol, r]));
+  const resultMap = new Map([...emResults, ...hfResults, ...sinaResults, ...usResults].map((r) => [r.symbol, r]));
   return symbols.map((s) => resultMap.get(s)).filter((v): v is QuoteItem => v != null);
+}
+
+// 美股行情（含盘前/盘后）：Yahoo v8 chart + includePrePost=true
+// v7 quote 现已要求 crumb 鉴权，改用 v8 chart 走 1m 分钟线判断当前会话状态。
+export async function fetchYahooUSQuotes(symbols: string[]): Promise<QuoteItem[]> {
+  if (symbols.length === 0) return [];
+
+  const results = await Promise.allSettled(
+    symbols.map(async (symbol): Promise<QuoteItem | null> => {
+      const yahooSymbol = symbol.startsWith("gb_") ? symbol.slice(3).toUpperCase() : symbol.toUpperCase();
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=1m&range=1d&includePrePost=true`;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+      try {
+        const res = await fetch(url, {
+          headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" },
+          signal: controller.signal,
+          cache: "no-store",
+        });
+        if (!res.ok) return null;
+        const json = await res.json() as {
+          chart: { result?: {
+            meta: {
+              symbol: string; shortName?: string; longName?: string;
+              regularMarketPrice: number; chartPreviousClose: number; currency?: string;
+              currentTradingPeriod?: { pre?: { start: number; end: number }; regular?: { start: number; end: number }; post?: { start: number; end: number } };
+            };
+            timestamp?: number[];
+            indicators: { quote: { close: (number | null)[] }[] };
+          }[] };
+        };
+        const r = json.chart.result?.[0];
+        if (!r) return null;
+        const m = r.meta;
+        if (!m.regularMarketPrice) return null;
+
+        const regularPrice = m.regularMarketPrice;
+        const prevClose = m.chartPreviousClose;
+        const change = regularPrice - prevClose;
+        const changePercent = prevClose > 0 ? (change / prevClose) * 100 : 0;
+
+        // 取最后一根有 close 的分钟线，判断属于 pre/regular/post 哪段
+        const ts = r.timestamp ?? [];
+        const closes = r.indicators.quote[0]?.close ?? [];
+        const period = m.currentTradingPeriod;
+        const regStart = period?.regular?.start;
+        const regEnd = period?.regular?.end;
+
+        let extendedSession: "pre" | "post" | undefined;
+        let extendedPrice: number | undefined;
+        let extendedChangePercent: number | undefined;
+
+        if (regStart != null && regEnd != null) {
+          for (let i = ts.length - 1; i >= 0; i--) {
+            const c = closes[i];
+            if (c == null) continue;
+            const t = ts[i]!;
+            if (t < regStart) {
+              extendedSession = "pre";
+              extendedPrice = c;
+            } else if (t >= regEnd) {
+              extendedSession = "post";
+              extendedPrice = c;
+            }
+            break;
+          }
+          if (extendedPrice != null && regularPrice > 0) {
+            extendedChangePercent = ((extendedPrice - regularPrice) / regularPrice) * 100;
+          }
+        }
+
+        return {
+          symbol,
+          // 美股统一只显示 ticker 简写，避免 "Advanced Micro Devices, Inc." 这种长名挤占 UI
+          name: yahooSymbol,
+          price: regularPrice,
+          change,
+          changePercent,
+          previousClose: prevClose,
+          currency: m.currency ?? "USD",
+          extendedSession,
+          extendedPrice,
+          extendedChangePercent,
+        };
+      } catch {
+        return null;
+      } finally {
+        clearTimeout(timeout);
+      }
+    })
+  );
+
+  return results
+    .filter((r): r is PromiseFulfilledResult<QuoteItem | null> => r.status === "fulfilled" && r.value !== null)
+    .map((r) => r.value!);
 }
 
 

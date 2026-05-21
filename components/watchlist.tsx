@@ -5,7 +5,10 @@ import { Plus, Trash2, TrendingDown, TrendingUp } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 type WatchItem = { id: number; code: string; name: string };
-type Quote = { price: number; changePercent: number; previousClose: number; name?: string };
+type Quote = {
+  price: number; changePercent: number; previousClose: number; name?: string;
+  extendedSession?: "pre" | "post"; extendedPrice?: number; extendedChangePercent?: number;
+};
 
 async function fetchWatchlist(): Promise<WatchItem[]> {
   const res = await fetch("/api/watchlist");
@@ -123,6 +126,17 @@ export default function Watchlist({
                     {positive ? <TrendingUp size={11} /> : <TrendingDown size={11} />}
                     {q ? `${positive ? "+" : ""}${q.changePercent.toFixed(2)}%` : "--"}
                   </p>
+                  {q?.extendedPrice != null && q.extendedSession && (
+                    <p className="mt-0.5 flex items-center justify-end gap-1 text-[10px] text-zinc-500">
+                      <span className="rounded bg-indigo-100 px-1 text-indigo-700">
+                        {q.extendedSession === "pre" ? "盘前" : "盘后"}
+                      </span>
+                      <span className="text-zinc-600">{q.extendedPrice.toFixed(3)}</span>
+                      <span className={(q.extendedChangePercent ?? 0) >= 0 ? "text-emerald-600" : "text-rose-600"}>
+                        {(q.extendedChangePercent ?? 0) >= 0 ? "+" : ""}{(q.extendedChangePercent ?? 0).toFixed(2)}%
+                      </span>
+                    </p>
+                  )}
                 </div>
                 <button
                   type="button"
