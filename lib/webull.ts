@@ -39,7 +39,10 @@ async function searchTickerId(symbol: string): Promise<number | null> {
 
   const url = `${WEBULL_BASE}/api/search/pc/tickers?keyword=${encodeURIComponent(symbol)}&pageIndex=1&pageSize=10&regionId=6`;
   const res = await fetchWithTimeout(url);
-  if (!res || !res.ok) return null;
+  if (!res || !res.ok) {
+    console.warn(`[webull] search ${symbol} failed: ${res?.status ?? "no response"}`);
+    return null;
+  }
 
   try {
     const json = await res.json() as { data?: { tickerId: number; symbol: string; disExchangeCode?: string; regionId?: number }[] };
@@ -84,6 +87,11 @@ export async function fetchWebullOvernight(symbols: string[]): Promise<WebullOve
   try {
     // 响应通常是数组；某些版本包了一层 { data: [...] }
     const raw = await res.json() as unknown;
+    // 调试用：打印第一条原始数据，方便对齐字段名
+    if (process.env.WEBULL_DEBUG === "1" || process.env.NODE_ENV !== "production") {
+      const sample = Array.isArray(raw) ? raw[0] : (raw as { data?: unknown[] }).data?.[0];
+      console.log("[webull] raw[0]:", JSON.stringify(sample).slice(0, 1500));
+    }
     const list = Array.isArray(raw) ? raw : (raw as { data?: unknown[] }).data ?? [];
 
     const idToSymbol = new Map(valid.map(v => [v.id, v.symbol]));
