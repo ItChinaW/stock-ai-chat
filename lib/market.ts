@@ -10,6 +10,11 @@ export type QuoteItem = {
   extendedSession?: "pre" | "post";
   extendedPrice?: number;
   extendedChangePercent?: number;
+  // 延长时段数据是否已过期（处于无 tick 空档，比如美东 20:00-04:00 之间）
+  extendedStale?: boolean;
+  // 美股夜盘（Blue Ocean ATS，20:00-04:00 ET），来自 Webull
+  overnightPrice?: number;
+  overnightChangePercent?: number;
 };
 
 const DEFAULT_TIMEOUT_MS = 8000;
@@ -315,9 +320,31 @@ export async function fetchYahooQuotes(symbols: string[]): Promise<QuoteItem[]> 
 
 // 美股行情（含盘前/盘后）：Yahoo v8 chart + includePrePost=true
 // v7 quote 现已要求 crumb 鉴权，改用 v8 chart 走 1m 分钟线判断当前会话状态。
+// 夜盘 (Blue Ocean ATS) 数据来自 Webull，并行拉取后合并。
 export async function fetchYahooUSQuotes(symbols: string[]): Promise<QuoteItem[]> {
   if (symbols.length === 0) return [];
 
+  const bareTickers = symbols.map(s => s.startsWith("gb_") ? s.slice(3).toUpperCase() : s.toUpperCase());
+
+  const [yahooResults, overnightResults] = await Promise.all([
+    fetchYahooUSQuotesRaw(symbols),
+    // Webull 失败不影响主流程
+    import("./webull").then(m => m.fetchWebullOvernight(bareTickers)).catch(() => []),
+  ]);
+
+  const overnightMap = new Map(overnightResults.map(o => [o.symbol, o]));
+  return yahooResults.map(q => {
+    const yahooSymbol = q.symbol.startsWith("gb_") ? q.symbol.slice(3).toUpperCase() : q.symbol.toUpperCase();
+    const ot = overnightMap.get(yahooSymbol);
+    if (ot?.overnightPrice != null) {
+      q.overnightPrice = ot.overnightPrice;
+      q.overnightChangePercent = ot.overnightChangePercent;
+    }
+    return q;
+  });
+}
+
+async function fetchYahooUSQuotesRaw(symbols: string[]): Promise<QuoteItem[]> {
   const results = await Promise.allSettled(
     symbols.map(async (symbol): Promise<QuoteItem | null> => {
       const yahooSymbol = symbol.startsWith("gb_") ? symbol.slice(3).toUpperCase() : symbol.toUpperCase();
@@ -352,33 +379,42 @@ export async function fetchYahooUSQuotes(symbols: string[]): Promise<QuoteItem[]
         const change = regularPrice - prevClose;
         const changePercent = prevClose > 0 ? (change / prevClose) * 100 : 0;
 
-        // 取最后一根有 close 的分钟线，判断属于 pre/regular/post 哪段
+        // 取最后一根有 close 的分钟线，按 pre/regular/post 时段分类
         const ts = r.timestamp ?? [];
         const closes = r.indicators.quote[0]?.close ?? [];
         const period = m.currentTradingPeriod;
+        const preStart = period?.pre?.start;
         const regStart = period?.regular?.start;
         const regEnd = period?.regular?.end;
+        const postEnd = period?.post?.end;
 
         let extendedSession: "pre" | "post" | undefined;
         let extendedPrice: number | undefined;
         let extendedChangePercent: number | undefined;
+        let extendedStale: boolean | undefined;
 
-        if (regStart != null && regEnd != null) {
+        if (preStart != null && regStart != null && regEnd != null) {
+          let lastTs: number | undefined;
           for (let i = ts.length - 1; i >= 0; i--) {
             const c = closes[i];
             if (c == null) continue;
             const t = ts[i]!;
-            if (t < regStart) {
-              extendedSession = "pre";
-              extendedPrice = c;
-            } else if (t >= regEnd) {
-              extendedSession = "post";
-              extendedPrice = c;
-            }
+            lastTs = t;
+            // 早于今日 pre.start = 昨日盘后 (或更早)；之间 = 今日盘前；regular 之后 = 盘后
+            if (t < preStart) extendedSession = "post";
+            else if (t < regStart) extendedSession = "pre";
+            else if (t < regEnd) extendedSession = undefined; // 盘中，不展示
+            else extendedSession = "post";
+            extendedPrice = c;
             break;
           }
           if (extendedPrice != null && regularPrice > 0) {
             extendedChangePercent = ((extendedPrice - regularPrice) / regularPrice) * 100;
+          }
+          // 当前已收市判定：现在处于昨日 post.end 之后、今日 pre.start 之前
+          const now = Math.floor(Date.now() / 1000);
+          if (lastTs != null && now > lastTs + 30 * 60 && (now < preStart || (postEnd != null && now > postEnd))) {
+            extendedStale = true;
           }
         }
 
@@ -394,6 +430,7 @@ export async function fetchYahooUSQuotes(symbols: string[]): Promise<QuoteItem[]
           extendedSession,
           extendedPrice,
           extendedChangePercent,
+          extendedStale,
         };
       } catch {
         return null;
