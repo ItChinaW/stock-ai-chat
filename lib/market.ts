@@ -6,8 +6,8 @@ export type QuoteItem = {
   changePercent: number;
   previousClose: number;
   currency?: string;
-  // 美股盘前 / 盘后（仅在有数据且与盘中价不同时透出）
-  extendedSession?: "pre" | "post";
+  // 美股盘前 / 盘后 / 夜盘（仅在有数据且与盘中价不同时透出）
+  extendedSession?: "pre" | "post" | "overnight";
   extendedPrice?: number;
   extendedChangePercent?: number;
   // 延长时段数据是否已过期（处于无 tick 空档，比如美东 20:00-04:00 之间）
@@ -315,16 +315,47 @@ export async function fetchYahooQuotes(symbols: string[]): Promise<QuoteItem[]> 
   return symbols.map((s) => resultMap.get(s)).filter((v): v is QuoteItem => v != null);
 }
 
-// 美股行情（含盘前/盘后）：Yahoo v8 chart + includePrePost=true
-// v7 quote 现已要求 crumb 鉴权，改用 v8 chart 走 1m 分钟线判断当前会话状态。
-// 夜盘 (Blue Ocean ATS) 数据来自 Webull，并行拉取后合并。
+// 美股行情（含盘前/盘后/夜盘 Overnight）。
+// 优先使用 Yahoo 页面抓取（无头浏览器抓报价头部，含 v8 API 没有的夜盘 Overnight）；
+// 缓存缺失（冷启动 / 抓取失败 / 环境无 playwright）的代码再回退到 Yahoo v8 chart API。
 export async function fetchYahooUSQuotes(symbols: string[]): Promise<QuoteItem[]> {
   if (symbols.length === 0) return [];
 
-  return fetchYahooUSQuotesRaw(symbols);
-  // 备注：尝试过 Webull / TradingView Scanner 拿 BLUO 20:00-04:00 ET 夜盘价，
-  // Webull quote API 要登录态、TradingView Scanner 只有 pre/post 字段。
-  // 想要真夜盘只能上 Polygon ($29/月) 或登录态爬虫。
+  const { subscribeYahoo, getYahooScrapeQuotes } = await import("./yahoo-scrape");
+  // 登记订阅，让后台轮询器持续刷新这些美股
+  subscribeYahoo(symbols);
+
+  const scraped = getYahooScrapeQuotes(symbols); // ticker(大写) -> ScrapeQuote
+  const fromScrape: QuoteItem[] = [];
+  const missing: string[] = [];
+
+  for (const symbol of symbols) {
+    const ticker = symbol.startsWith("gb_")
+      ? symbol.slice(3).toUpperCase()
+      : symbol.replace(/-US$/i, "").toUpperCase();
+    const s = scraped.get(ticker);
+    if (s) {
+      fromScrape.push({
+        symbol, // 保留调用方原始 symbol 作为 key，前端能查到
+        name: ticker,
+        price: s.price,
+        change: s.change,
+        changePercent: s.changePercent,
+        previousClose: s.previousClose,
+        currency: "USD",
+        extendedSession: s.extendedSession,
+        extendedPrice: s.extendedPrice,
+        extendedChangePercent: s.extendedChangePercent,
+        extendedStale: s.extendedStale,
+      });
+    } else {
+      missing.push(symbol);
+    }
+  }
+
+  // 页面还没抓到的，用 Yahoo v8 API 兜底
+  const fromApi = missing.length ? await fetchYahooUSQuotesRaw(missing) : [];
+  return [...fromScrape, ...fromApi];
 }
 
 async function fetchYahooUSQuotesRaw(symbols: string[]): Promise<QuoteItem[]> {

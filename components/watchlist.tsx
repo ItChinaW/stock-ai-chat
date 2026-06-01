@@ -1,15 +1,32 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, Trash2, TrendingDown, TrendingUp } from "lucide-react";
+import { Loader2, Plus, Trash2, TrendingDown, TrendingUp } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import FutuHoverPreview from "./futu-hover-preview";
+
+// 是否美股（含 ETF）：非 A股、非纯数字代码即视为美股，启用富途 hover 预览
+function isUSStock(code: string): boolean {
+  const s = code.trim();
+  if (/^\d{6}$/.test(s)) return false; // A股
+  if (/^(sh|sz|bj)/i.test(s)) return false;
+  return true;
+}
 
 type WatchItem = { id: number; code: string; name: string };
 type Quote = {
   price: number; changePercent: number; previousClose: number; name?: string;
-  extendedSession?: "pre" | "post"; extendedPrice?: number; extendedChangePercent?: number;
+  extendedSession?: "pre" | "post" | "overnight"; extendedPrice?: number; extendedChangePercent?: number;
   extendedStale?: boolean;
 };
+
+// 延长时段中文标签
+function sessionLabel(session: Quote["extendedSession"], stale?: boolean): string {
+  if (stale) return "已收市";
+  if (session === "pre") return "盘前";
+  if (session === "overnight") return "夜盘";
+  return "盘后";
+}
 
 async function fetchWatchlist(): Promise<WatchItem[]> {
   const res = await fetch("/api/watchlist");
@@ -33,7 +50,7 @@ export default function Watchlist({
   const { data: items = [] } = useQuery({ queryKey: ["watchlist"], queryFn: fetchWatchlist });
 
   const symbols = items.map((i) => i.code);
-  const { data: quotes = {} } = useQuery({
+  const { data: quotes = {}, isFetching: quotesFetching } = useQuery({
     queryKey: ["watchlist-quotes", symbols],
     queryFn: () => fetchQuotes(symbols),
     enabled: symbols.length > 0,
@@ -108,8 +125,8 @@ export default function Watchlist({
           const q = quotes[item.code];
           const positive = (q?.changePercent ?? 0) >= 0;
           return (
+            <FutuHoverPreview key={item.code} code={item.code} quote={q} enabled={isUSStock(item.code)}>
             <div
-              key={item.code}
               role="button"
               tabIndex={0}
               onClick={() => onSelect(item.code, q)}
@@ -129,13 +146,14 @@ export default function Watchlist({
                   </p>
                   {q?.extendedPrice != null && q.extendedSession && (
                     <p className="mt-0.5 flex items-center justify-end gap-1 text-[10px] text-zinc-500">
-                      <span className={`rounded px-1 ${q.extendedStale ? "bg-zinc-200 text-zinc-600" : "bg-indigo-100 text-indigo-700"}`}>
-                        {q.extendedStale ? "已收市" : q.extendedSession === "pre" ? "盘前" : "盘后"}
+                      <span className={`rounded px-1 ${q.extendedStale ? "bg-zinc-200 text-zinc-600" : q.extendedSession === "overnight" ? "bg-violet-100 text-violet-700" : "bg-indigo-100 text-indigo-700"}`}>
+                        {sessionLabel(q.extendedSession, q.extendedStale)}
                       </span>
                       <span className="text-zinc-600">{q.extendedPrice.toFixed(3)}</span>
                       <span className={(q.extendedChangePercent ?? 0) >= 0 ? "text-emerald-600" : "text-rose-600"}>
                         {(q.extendedChangePercent ?? 0) >= 0 ? "+" : ""}{(q.extendedChangePercent ?? 0).toFixed(2)}%
                       </span>
+                      {quotesFetching && <Loader2 size={10} className="animate-spin text-zinc-400" />}
                     </p>
                   )}
                 </div>
@@ -148,6 +166,7 @@ export default function Watchlist({
                 </button>
               </div>
             </div>
+            </FutuHoverPreview>
           );
         })}
       </div>
