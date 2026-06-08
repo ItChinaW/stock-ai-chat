@@ -236,3 +236,24 @@ model StockSnapshot {
 
   @@map("stock_snapshots")
 }
+
+// 未来大事时间线（财经日历 + AI 归纳 + 人工精选）
+model MarketEvent {
+  id         Int      @id @default(autoincrement())
+  date       String                              // YYYY-MM-DD
+  time       String?                             // HH:mm，可选
+  title      String
+  category   String   @default("综合")           // 宏观|公司|行业|综合
+  region     String   @default("全球")           // 中国|美国|欧洲|全球...
+  importance Int      @default(1)                // 1=一般 2=重要 3=极重要
+  note       String?  @db.Text
+  source     String   @default("ai")             // calendar|ai|manual|<来源名>
+  url        String?  @db.Text                   // 相关链接，可选
+  dedupeKey  String   @unique @map("dedupe_key") // date|归一化标题，用于 upsert 去重
+  pinned     Boolean  @default(false)            // 人工精选事件，不被自动清理
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@index([date])
+  @@map("market_events")
+}

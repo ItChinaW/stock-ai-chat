@@ -5,7 +5,9 @@ import { BarChart2, Bitcoin, Bot, FlaskConical, Send, Square, X } from "lucide-r
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import { MODELS, streamChat } from "@/lib/ai-chat-client";
 import AiChatModal from "./ai-chat-modal";
+import EventTimeline from "./event-timeline";
 import PortfolioDashboard from "./portfolio-dashboard";
 import Watchlist from "./watchlist";
 
@@ -21,12 +23,6 @@ const SIDEBAR_LINKS = [
   { href: "/crypto", icon: Bitcoin, label: "数字量化", desc: "加密货币策略回测" },
 ];
 
-const MODELS = [
-  { id: "deepseek-chat", label: "DeepSeek" },
-  { id: "qwen-plus", label: "通义千问" },
-  { id: "glm-4-flash", label: "GLM-4 Flash" },
-];
-
 const PORTFOLIO_QUICK_QUESTIONS = [
   "我的持仓中有哪些近期有买入机会？",
   "哪些股票需要注意风险？",
@@ -40,32 +36,6 @@ const NEWS_QUICK_QUESTIONS = [
   "全球宏观有什么值得关注的？",
   "结合新闻，现在适合操作吗？",
 ];
-
-// 通用流式发送逻辑
-async function streamChat(
-  messages: { role: "user" | "assistant"; content: string }[],
-  model: string,
-  systemOverride: string,
-  signal: AbortSignal,
-  onChunk: (text: string) => void
-) {
-  const res = await fetch("/api/ai/chat", {
-    method: "POST", headers: { "Content-Type": "application/json" }, signal,
-    body: JSON.stringify({ messages: messages.slice(-10), model, systemOverride }),
-  });
-  if (!res.ok || !res.body) throw new Error("请求失败");
-  const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = "";
-  while (true) {
-    const { done, value } = await reader.read(); if (done) break;
-    buf += dec.decode(value, { stream: true });
-    const lines = buf.split("\n"); buf = lines.pop() ?? "";
-    for (const line of lines) {
-      if (!line.startsWith("data: ")) continue;
-      const payload = line.slice(6).trim(); if (payload === "[DONE]") break;
-      try { const p = JSON.parse(payload) as { text?: string }; if (p.text) onChunk(p.text); } catch { /* ignore */ }
-    }
-  }
-}
 
 // ── 持仓 AI 弹窗 ──────────────────────────────────────────
 function PortfolioAiModal({ onClose }: { onClose: () => void }) {
@@ -424,6 +394,9 @@ export default function MainLayout() {
           </button>
           )}
         </div>
+
+        {/* 未来一周大事时间线 */}
+        <EventTimeline />
       </aside>
 
       {portfolioAiOpen && aiConfig?.aiEnabled && <PortfolioAiModal onClose={() => setPortfolioAiOpen(false)} />}
