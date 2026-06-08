@@ -76,7 +76,7 @@ function coreTitle(t: string): string {
     .replace(/\d+月份?/g, "")
     .replace(/(利率决议|利率决定|议息会议|货币政策会议|货币政策决议|议息)/g, "议息")
     .replace(/(揭幕战|揭幕式|揭幕|开幕式|开幕)/g, "揭幕")
-    .replace(/(预计|前瞻|初值|终值|或|约|数据|公布|发布|举行|召开|相关|进展|长期|多年期|多年)/g, "")
+    .replace(/(预计|前瞻|初值|终值|或将|或|约|将与|将|拟|计划|数据|公布|发布|举行|召开|相关|进展|长期|多年期|多年)/g, "")
     .replace(/[\s　，,。.、:：「」"'%·\-—]/g, "")
     .toLowerCase();
 }
@@ -101,6 +101,10 @@ const NON_EVENT_KW = /(谈|认为|表示|声称|宣称|称与|称将|警告|看�
 function isNonEvent(e: { title: string }): boolean {
   return NON_EVENT_KW.test(e.title);
 }
+
+// 财报/业绩类：AI 最易凭记忆臆测错日期（如把特斯拉财报放到 6 月），
+// 仅在有近期新闻佐证时才保留
+const EARNINGS_KW = /(财报|业绩|季报|年报|earnings|财季|盈利报告)/i;
 
 // ── 财经日历（金十数据 CDN，best-effort）────────────────────────
 type Jin10Row = {
@@ -159,8 +163,11 @@ function stripHtml(s: string): string {
   return s.replace(/<[^>]+>/g, "").replace(/&[a-z]+;/g, " ").trim();
 }
 
-// 新闻条目：文本 + 原文链接（用于事件回溯原文）
-type NewsSource = { text: string; url?: string };
+// 新闻条目：文本 + 原文链接 + 发布时间(unix 秒，用于剔除旧闻)
+type NewsSource = { text: string; url?: string; time?: number };
+
+// 只喂给 AI 最近 4 天的新闻，避免旧的"下周看点/前瞻"文章被当成本周日程
+const NEWS_MAX_AGE_MS = 4 * 24 * 60 * 60_000;
 
 // 华尔街见闻：覆盖全球宏观/美股/A股快讯，对 IPO、议息、大事报道及时
 async function fetchWallstreetcn(): Promise<NewsSource[]> {
@@ -170,7 +177,7 @@ async function fetchWallstreetcn(): Promise<NewsSource[]> {
       fetch(`https://api-one-wscn.awtmt.com/apiv1/content/lives?channel=${ch}&client=pc&limit=25`, {
         headers: { "User-Agent": "Mozilla/5.0" },
         signal: AbortSignal.timeout(8000),
-      }).then((r) => r.json() as Promise<{ data?: { items?: { id?: number; uri?: string; title?: string; content_text?: string; content?: string }[] } }>)
+      }).then((r) => r.json() as Promise<{ data?: { items?: { id?: number; uri?: string; title?: string; content_text?: string; content?: string; display_time?: number }[] } }>)
     )
   );
   const out: NewsSource[] = [];
@@ -178,26 +185,26 @@ async function fetchWallstreetcn(): Promise<NewsSource[]> {
     if (r.status !== "fulfilled") continue;
     for (const it of r.value.data?.items ?? []) {
       const text = it.title?.trim() || stripHtml(it.content_text || it.content || "");
-      if (text) out.push({ text: text.slice(0, 120), url: it.uri || (it.id ? `https://wallstreetcn.com/livenews/${it.id}` : undefined) });
+      if (text) out.push({ text: text.slice(0, 120), url: it.uri || (it.id ? `https://wallstreetcn.com/livenews/${it.id}` : undefined), time: it.display_time });
     }
   }
   return out;
 }
 
-// 复用项目已有的 /api/market/news 各源（含原文 url）
+// 复用项目已有的 /api/market/news 各源（含原文 url + 发布时间）
 async function fetchExistingNews(origin: string): Promise<NewsSource[]> {
   const sources = ["ths", "em", "sina", "global"];
   const results = await Promise.allSettled(
     sources.map((s) =>
       fetch(`${origin}/api/market/news?source=${s}`, { signal: AbortSignal.timeout(9000) })
-        .then((r) => r.json() as Promise<{ title: string; digest?: string; url?: string }[]>)
+        .then((r) => r.json() as Promise<{ title: string; digest?: string; url?: string; time?: number }[]>)
     )
   );
   const out: NewsSource[] = [];
   for (const r of results) {
     if (r.status !== "fulfilled" || !Array.isArray(r.value)) continue;
     for (const it of r.value.slice(0, 20)) {
-      if (it?.title) out.push({ text: it.digest ? `${it.title}——${it.digest}` : it.title, url: it.url });
+      if (it?.title) out.push({ text: it.digest ? `${it.title}——${it.digest}` : it.title, url: it.url, time: it.time });
     }
   }
   return out;
@@ -205,9 +212,12 @@ async function fetchExistingNews(origin: string): Promise<NewsSource[]> {
 
 async function gatherSources(origin: string): Promise<NewsSource[]> {
   const [existing, wscn] = await Promise.all([fetchExistingNews(origin), fetchWallstreetcn()]);
+  const minTs = (Date.now() - NEWS_MAX_AGE_MS) / 1000; // unix 秒
   const seen = new Set<string>();
   const merged: NewsSource[] = [];
   for (const s of [...existing, ...wscn]) {
+    // 有发布时间且早于 4 天前的旧闻直接剔除（无时间的保留）
+    if (s.time && s.time > 0 && s.time < minTs) continue;
     const k = normalizeTitle(s.text).slice(0, 40);
     if (k && !seen.has(k)) { seen.add(k); merged.push(s); }
   }
@@ -243,8 +253,9 @@ async function fetchAiEvents(origin: string, start: dayjs.Dayjs, end: dayjs.Dayj
 2. 排除一切中国相关事件：中国大陆/A股/港股个股公告、派息除权、人民币中间价、中国央行公开市场操作、中国国内政经活动等都不要。聚焦美国、欧洲、日韩及全球性大事。
 3. date 必须是事件【实际发生】的那一天，且落在 ${today} 至 ${end.format("YYYY-MM-DD")} 之间；不要用新闻发布日。尽量把事件分散到这 7 天，不要都堆在今天。
 4. 不确定具体日期的不要编造；已发生的不要。不要输出含糊的"筹备/进展/相关会议"等填充类事件；同一事件只输出一次（用最准确的日期）。
-5. 若事件主要来自下方某条新闻，用 "ref" 标明该新闻序号（数字）便于回溯原文；你补充的常识性事件可省略 ref。
-6. 严格只输出 JSON 数组，不要任何解释、不要代码块围栏。每个元素：
+5. 新闻里可能混有旧的"下周看点/前瞻/财报来袭"类汇总文章（往往是几个月前的），绝不能据此把里面提到的财报/会议安到本周；财报有固定季节（如特斯拉/苹果财报通常在 1、4、7、10 月），不在本窗口的就不要列。只采信确实指向 ${start.format("YYYY-MM-DD")} 至 ${end.format("YYYY-MM-DD")} 的事件。
+6. 若事件主要来自下方某条新闻，用 "ref" 标明该新闻序号（数字）便于回溯原文；你补充的常识性事件可省略 ref。
+7. 严格只输出 JSON 数组，不要任何解释、不要代码块围栏。每个元素：
 {"date":"YYYY-MM-DD","time":"HH:mm或省略","title":"≤18字简洁标题","category":"宏观|公司|行业|综合","region":"美国|欧洲|日本|韩国|全球|其它","importance":1|2|3,"note":"≤24字补充，可省略","ref":新闻序号或省略}
 importance：3=极重要，2=重要，1=一般。按日期升序，尽量给出 12-20 条。
 
@@ -263,10 +274,10 @@ ${sources.map((s, i) => `${i + 1}. ${s.text}`).join("\n")}`;
     if (!Array.isArray(parsed)) return [];
     return parsed
       .filter((e) => e && typeof e.date === "string" && typeof e.title === "string")
-      .map((e): EventDTO => {
+      .map((e) => {
         const ref = Number(e.ref);
-        const url = Number.isInteger(ref) && ref >= 1 && ref <= sources.length ? sources[ref - 1].url : undefined;
-        return {
+        const grounded = Number.isInteger(ref) && ref >= 1 && ref <= sources.length; // 来自真实近期新闻
+        const dto: EventDTO = {
           date: e.date as string,
           time: typeof e.time === "string" && /\d{1,2}:\d{2}/.test(e.time) ? e.time : undefined,
           title: (e.title as string).slice(0, 24),
@@ -275,9 +286,13 @@ ${sources.map((s, i) => `${i + 1}. ${s.text}`).join("\n")}`;
           importance: clampImportance(e.importance),
           note: typeof e.note === "string" ? e.note.slice(0, 30) : undefined,
           source: "ai",
-          url,
+          url: grounded ? sources[ref - 1].url : undefined,
         };
-      });
+        return { dto, grounded };
+      })
+      // 财报/业绩类 AI 最容易凭训练记忆臆测错日期：没有近期新闻佐证的一律丢弃
+      .filter(({ dto, grounded }) => grounded || !EARNINGS_KW.test(dto.title))
+      .map(({ dto }) => dto);
   } catch {
     return [];
   }
@@ -286,6 +301,8 @@ ${sources.map((s, i) => `${i + 1}. ${s.text}`).join("\n")}`;
 // ── 入库（采集 → upsert）────────────────────────────────────────
 const g = globalThis as unknown as { eventsLastIngest?: number; eventsIngesting?: boolean };
 const INGEST_TTL = 30 * 60_000;
+// 非精选事件保留时长：每次 ingest 刷新仍在产出事件的 updatedAt，超过此时长未再产出即过期
+const EVENT_TTL_MS = 3 * 60 * 60_000;
 
 export function isIngestStale(): boolean {
   return !g.eventsLastIngest || Date.now() - g.eventsLastIngest > INGEST_TTL;
@@ -333,9 +350,18 @@ export async function ingestEvents(origin: string): Promise<number> {
       count++;
     }
 
-    // 清理：过期事件（昨天及更早）+ 历史遗留的中国地区事件
+    // 清理：① 过期(昨天及更早) ② 中国地区遗留
+    // ③ 非精选事件按 TTL 过期：每次 ingest 会刷新仍在产出的事件的 updatedAt，
+    //    AI 不再产出的旧/错事件（如误标的财报）超过 TTL 自动消失；保留多次 ingest 的并集以保证覆盖
+    const ttlCutoff = new Date(Date.now() - EVENT_TTL_MS);
     await prisma.marketEvent.deleteMany({
-      where: { OR: [{ date: { lt: lo } }, { region: { in: [...CHINA_REGIONS] } }] },
+      where: {
+        OR: [
+          { date: { lt: lo } },
+          { region: { in: [...CHINA_REGIONS] } },
+          { pinned: false, updatedAt: { lt: ttlCutoff } },
+        ],
+      },
     });
 
     g.eventsLastIngest = Date.now();
