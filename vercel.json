@@ -5,6 +5,6 @@
   "functions": {
     "app/api/positions/turtle-monitor/route.ts": { "maxDuration": 30 },
     "app/api/positions/import/route.ts": { "maxDuration": 30 },
-    "app/api/market/quotes/route.ts": { "maxDuration": 15 }
+    "app/api/market/quotes/route.ts": { "maxDuration": 60 }
   }
 }

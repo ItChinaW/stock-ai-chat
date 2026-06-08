@@ -257,3 +257,18 @@ model MarketEvent {
   @@index([date])
   @@map("market_events")
 }
+
+// 美股盘前/盘后/夜盘报价缓存（无头浏览器抓取后落库，跨 serverless 实例共享）
+model UsExtQuote {
+  symbol        String   @id                         // ticker 大写
+  name          String   @default("")
+  price         Float    @default(0)                 // 盘中/收盘价
+  changePercent Float    @default(0)
+  previousClose Float    @default(0)
+  extSession    String?  @map("ext_session")         // pre|post|overnight
+  extPrice      Float?   @map("ext_price")
+  extChangePct  Float?   @map("ext_change_pct")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("us_ext_quotes")
+}

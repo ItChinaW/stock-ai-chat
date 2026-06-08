@@ -37,6 +37,8 @@ const MAX_BACKOFF_MS = 10 * 60_000;
 
 const RATE_LIMITED_RE = /Too Many Requests|Will be right back|temporarily unavailable/i;
 
+const ON_DEMAND_MIN_INTERVAL_MS = 45_000;
+
 const g = globalThis as unknown as {
   yScrapeBrowser?: Browser;
   yScrapeCtx?: BrowserContext;
@@ -46,7 +48,21 @@ const g = globalThis as unknown as {
   yScrapeTimer?: ReturnType<typeof setTimeout>;
   yScrapeUnavailable?: boolean;
   yScrapeBackoffMs?: number;
+  yScrapeOnDemandAt?: number;
+  yScrapeOnDemandInFlight?: boolean;
 };
+
+const isServerless = !!(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+
+// Vercel：用 waitUntil 让抓取在响应返回后继续完成（serverless 函数否则会被立即回收）
+async function runInBackground(p: Promise<unknown>): Promise<void> {
+  try {
+    const { waitUntil } = await import("@vercel/functions");
+    waitUntil(p);
+  } catch {
+    void p; // 本地等非 Vercel 环境：直接后台跑
+  }
+}
 
 g.yScrapeCache ??= new Map();
 g.yScrapeSubs ??= new Set();
@@ -71,6 +87,67 @@ export function getYahooScrapeQuotes(symbols: string[]): Map<string, ScrapeQuote
     const t = normalizeTicker(s);
     const q = g.yScrapeCache!.get(t);
     if (q && now - q.updatedAt < STALE_MS) out.set(t, q);
+  }
+  return out;
+}
+
+// 写入数据库缓存（跨 serverless 实例共享；本地轮询与 serverless 按需抓取都写这里）
+async function persistQuote(q: ScrapeQuote): Promise<void> {
+  try {
+    const { prisma } = await import("./prisma");
+    const data = {
+      name: q.name,
+      price: q.price,
+      changePercent: q.changePercent,
+      previousClose: q.previousClose,
+      extSession: q.extendedSession ?? null,
+      extPrice: q.extendedPrice ?? null,
+      extChangePct: q.extendedChangePercent ?? null,
+    };
+    await prisma.usExtQuote.upsert({
+      where: { symbol: q.symbol },
+      create: { symbol: q.symbol, ...data },
+      update: data,
+    });
+  } catch {
+    /* DB 不可用时忽略，内存缓存仍可用 */
+  }
+}
+
+// 读取报价：内存缓存优先，缺失再读数据库缓存（仅取未过期的）
+export async function getExtQuotes(symbols: string[]): Promise<Map<string, ScrapeQuote>> {
+  const out = new Map<string, ScrapeQuote>();
+  const now = Date.now();
+  const tickers = symbols.map(normalizeTicker);
+  for (const t of tickers) {
+    const q = g.yScrapeCache!.get(t);
+    if (q && now - q.updatedAt < STALE_MS) out.set(t, q);
+  }
+  const missing = tickers.filter((t) => !out.has(t));
+  if (missing.length) {
+    try {
+      const { prisma } = await import("./prisma");
+      const rows = await prisma.usExtQuote.findMany({ where: { symbol: { in: missing } } });
+      for (const r of rows) {
+        const ts = r.updatedAt.getTime();
+        if (now - ts >= STALE_MS) continue;
+        out.set(r.symbol, {
+          symbol: r.symbol,
+          name: r.name,
+          price: r.price,
+          change: r.price - r.previousClose,
+          changePercent: r.changePercent,
+          previousClose: r.previousClose,
+          extendedSession: (r.extSession as ScrapeQuote["extendedSession"]) ?? undefined,
+          extendedPrice: r.extPrice ?? undefined,
+          extendedChangePercent: r.extChangePct ?? undefined,
+          extendedStale: false,
+          updatedAt: ts,
+        });
+      }
+    } catch {
+      /* ignore */
+    }
   }
   return out;
 }
@@ -158,16 +235,33 @@ export function parseYahooHeader(ticker: string, text: string): ScrapeQuote | nu
   return q;
 }
 
-// ── 浏览器单例 ────────────────────────────────────────────────────────────
+// ── 浏览器启动 ────────────────────────────────────────────────────────────
+const UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+// serverless 用 @sparticuz/chromium + playwright-core；本地用完整 playwright
+async function launchBrowser(): Promise<Browser> {
+  if (isServerless) {
+    const sparticuz = (await import("@sparticuz/chromium")).default;
+    const { chromium } = await import("playwright-core");
+    return chromium.launch({
+      args: sparticuz.args,
+      executablePath: await sparticuz.executablePath(),
+      headless: true,
+    });
+  }
+  const { chromium } = await import("playwright");
+  return chromium.launch({ headless: true });
+}
+
+// 本地常驻 context（供后台轮询器复用）
 async function getContext(): Promise<BrowserContext | null> {
   if (g.yScrapeUnavailable) return null;
   if (g.yScrapeCtx) return g.yScrapeCtx;
   try {
-    const { chromium } = await import("playwright");
-    g.yScrapeBrowser = await chromium.launch({ headless: true });
+    g.yScrapeBrowser = await launchBrowser();
     g.yScrapeCtx = await g.yScrapeBrowser.newContext({
-      userAgent:
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      userAgent: UA,
       locale: "en-US",
       timezoneId: "America/New_York",
     });
@@ -175,16 +269,15 @@ async function getContext(): Promise<BrowserContext | null> {
   } catch (err) {
     g.yScrapeUnavailable = true;
     console.warn(
-      "[yahoo-scrape] playwright 不可用，页面抓取已禁用，回退 Yahoo API:",
+      "[yahoo-scrape] 无头浏览器不可用，页面抓取已禁用，回退 Yahoo API:",
       err instanceof Error ? err.message : err
     );
     return null;
   }
 }
 
-async function scrapeOne(ticker: string): Promise<boolean> {
-  const ctx = await getContext();
-  if (!ctx) return false;
+// 用给定 context 抓单个 ticker，写入内存 + 数据库缓存；返回是否被限流
+async function fetchAndStore(ctx: BrowserContext, ticker: string): Promise<boolean> {
   const page = await ctx.newPage();
   try {
     await page.goto(`https://finance.yahoo.com/quote/${ticker}/`, {
@@ -207,7 +300,10 @@ async function scrapeOne(ticker: string): Promise<boolean> {
     }
 
     const q = parseYahooHeader(ticker, text);
-    if (q) g.yScrapeCache!.set(ticker, q);
+    if (q) {
+      g.yScrapeCache!.set(ticker, q);
+      await persistQuote(q);
+    }
     return false;
   } catch (err) {
     console.warn(
@@ -218,6 +314,50 @@ async function scrapeOne(ticker: string): Promise<boolean> {
   } finally {
     await page.close().catch(() => {});
   }
+}
+
+async function scrapeOne(ticker: string): Promise<boolean> {
+  const ctx = await getContext();
+  if (!ctx) return false;
+  return fetchAndStore(ctx, ticker);
+}
+
+// serverless 按需抓取：启动临时浏览器抓指定 ticker、落库后关闭（无常驻轮询）
+async function scrapeSymbolsNow(tickers: string[]): Promise<void> {
+  if (!tickers.length || g.yScrapeOnDemandInFlight) return;
+  g.yScrapeOnDemandInFlight = true;
+  let browser: Browser | undefined;
+  try {
+    browser = await launchBrowser();
+    const ctx = await browser.newContext({ userAgent: UA, locale: "en-US", timezoneId: "America/New_York" });
+    for (let i = 0; i < tickers.length; i += CONCURRENCY) {
+      const batch = tickers.slice(i, i + CONCURRENCY);
+      await Promise.allSettled(batch.map((t) => fetchAndStore(ctx, t)));
+      if (i + CONCURRENCY < tickers.length) await new Promise((r) => setTimeout(r, BATCH_GAP_MS));
+    }
+    await ctx.close().catch(() => {});
+  } catch (err) {
+    console.warn("[yahoo-scrape] serverless 抓取失败:", err instanceof Error ? err.message : err);
+  } finally {
+    await browser?.close().catch(() => {});
+    g.yScrapeOnDemandInFlight = false;
+  }
+}
+
+// 统一入口：本地启动常驻轮询；serverless 在数据陈旧时后台按需抓取（waitUntil）
+export async function ensureFreshExt(symbols: string[]): Promise<void> {
+  if (!isServerless) {
+    subscribeYahoo(symbols);
+    return;
+  }
+  if (g.yScrapeOnDemandInFlight) return;
+  const now = Date.now();
+  if (g.yScrapeOnDemandAt && now - g.yScrapeOnDemandAt < ON_DEMAND_MIN_INTERVAL_MS) return;
+  const fresh = await getExtQuotes(symbols);
+  const stale = symbols.map(normalizeTicker).filter((t) => !fresh.has(t));
+  if (!stale.length) return;
+  g.yScrapeOnDemandAt = now;
+  await runInBackground(scrapeSymbolsNow(stale));
 }
 
 async function pollOnce(): Promise<boolean> {

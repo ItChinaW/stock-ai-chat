@@ -321,11 +321,11 @@ export async function fetchYahooQuotes(symbols: string[]): Promise<QuoteItem[]> 
 export async function fetchYahooUSQuotes(symbols: string[]): Promise<QuoteItem[]> {
   if (symbols.length === 0) return [];
 
-  const { subscribeYahoo, getYahooScrapeQuotes } = await import("./yahoo-scrape");
-  // 登记订阅，让后台轮询器持续刷新这些美股
-  subscribeYahoo(symbols);
+  const { ensureFreshExt, getExtQuotes } = await import("./yahoo-scrape");
+  // 本地：启动后台轮询；serverless：数据陈旧时后台抓取(waitUntil)并落库
+  void ensureFreshExt(symbols);
 
-  const scraped = getYahooScrapeQuotes(symbols); // ticker(大写) -> ScrapeQuote
+  const scraped = await getExtQuotes(symbols); // ticker(大写) -> ScrapeQuote（内存 + 数据库缓存）
   const fromScrape: QuoteItem[] = [];
   const missing: string[] = [];
 
